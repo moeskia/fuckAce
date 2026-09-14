@@ -295,7 +295,7 @@ int wmain(void) {
     }
 
     printf("================================================\n");
-    printf(" SGuard priority / affinity / efficiency tool\n");
+    printf(" fuckAce - SGuard priority/affinity/efficiency\n");
     printf("================================================\n\n");
 
     PrintOk(" [+] administrator privileges\n");
