@@ -35,14 +35,54 @@ typedef struct _PROCESS_RESULT {
 
 static HANDLE g_console;
 
-static void PrintColor(WORD color, const char *fmt, ...) {
+static void PrintColorV(WORD color, const char *fmt, va_list args) {
+    SetConsoleTextAttribute(g_console, color);
+    vprintf(fmt, args);
+    SetConsoleTextAttribute(g_console, COLOR_DEFAULT);
+}
+
+static void PrintOk(const char *fmt, ...) {
     va_list args;
 
-    SetConsoleTextAttribute(g_console, color);
     va_start(args, fmt);
-    vprintf(fmt, args);
+    PrintColorV(COLOR_GREEN, fmt, args);
     va_end(args);
-    SetConsoleTextAttribute(g_console, COLOR_DEFAULT);
+}
+
+static void PrintFail(const char *fmt, ...) {
+    va_list args;
+
+    va_start(args, fmt);
+    PrintColorV(COLOR_RED, fmt, args);
+    va_end(args);
+}
+
+static void PrintWarn(const char *fmt, ...) {
+    va_list args;
+
+    va_start(args, fmt);
+    PrintColorV(COLOR_YELLOW, fmt, args);
+    va_end(args);
+}
+
+static void PrintHint(DWORD err) {
+    const char *hint = NULL;
+
+    switch (err) {
+    case ERROR_ACCESS_DENIED:
+        hint = "access denied, process may be protected";
+        break;
+    case ERROR_INVALID_PARAMETER:
+        hint = "invalid parameter, operation may be unsupported";
+        break;
+    case ERROR_NOT_SUPPORTED:
+        hint = "operation not supported on this system";
+        break;
+    }
+
+    if (hint) {
+        PrintFail("            hint: %s\n", hint);
+    }
 }
 
 static void PauseBeforeExit(void) {
@@ -176,37 +216,23 @@ static BOOL IsTargetProcess(const wchar_t *name) {
         _wcsicmp(name, L"SGuardSvc64.exe") == 0;
 }
 
-static void PrintErrorHint(DWORD err) {
-    switch (err) {
-    case ERROR_ACCESS_DENIED:
-        PrintColor(COLOR_RED, "  Hint: access denied. The process may be protected.\n");
-        break;
-    case ERROR_INVALID_PARAMETER:
-        PrintColor(COLOR_RED, "  Hint: invalid parameter. This operation may not be supported.\n");
-        break;
-    case ERROR_NOT_SUPPORTED:
-        PrintColor(COLOR_RED, "  Hint: not supported. Efficiency Mode may be unavailable.\n");
-        break;
-    default:
-        break;
-    }
-}
-
 static PROCESS_RESULT ConfigureProcess(
+    int index,
     DWORD pid,
     const wchar_t *processName,
+    DWORD targetCpu,
     DWORD_PTR affinityMask
 ) {
     PROCESS_RESULT result = {0};
 
-    printf("\nProcess: %ls  PID=%lu\n", processName, pid);
+    printf("\n #%-2d %ls  (PID %lu)\n", index, processName, pid);
 
     HANDLE hProcess = OpenProcess(PROCESS_SET_INFORMATION, FALSE, pid);
 
     if (!hProcess) {
         DWORD err = GetLastError();
-        PrintColor(COLOR_RED, "  [FAIL] OpenProcess failed. Error=%lu\n", err);
-        PrintErrorHint(err);
+        PrintFail("      [-] %-11s failed (Error=%lu)\n", "open", err);
+        PrintHint(err);
         return result;
     }
 
@@ -214,30 +240,30 @@ static PROCESS_RESULT ConfigureProcess(
 
     if (SetPriorityClass(hProcess, IDLE_PRIORITY_CLASS)) {
         result.okCount++;
-        PrintColor(COLOR_GREEN, "  [OK] Priority set to IDLE_PRIORITY_CLASS.\n");
+        PrintOk("      [+] %-11s %s\n", "priority", "IDLE");
     } else {
         DWORD err = GetLastError();
-        PrintColor(COLOR_RED, "  [FAIL] SetPriorityClass failed. Error=%lu\n", err);
-        PrintErrorHint(err);
+        PrintFail("      [-] %-11s failed (Error=%lu)\n", "priority", err);
+        PrintHint(err);
     }
 
     if (SetProcessAffinityMask(hProcess, affinityMask)) {
         result.okCount++;
-        PrintColor(COLOR_GREEN, "  [OK] CPU affinity set to last logical CPU.\n");
+        PrintOk("      [+] %-11s CPU %lu\n", "affinity", targetCpu);
     } else {
         DWORD err = GetLastError();
-        PrintColor(COLOR_RED, "  [FAIL] SetProcessAffinityMask failed. Error=%lu\n", err);
-        PrintErrorHint(err);
+        PrintFail("      [-] %-11s failed (Error=%lu)\n", "affinity", err);
+        PrintHint(err);
     }
 
-    DWORD efficiencyErr = ERROR_SUCCESS;
+    DWORD ecoErr = ERROR_SUCCESS;
 
-    if (EnableEfficiencyMode(hProcess, &efficiencyErr)) {
+    if (EnableEfficiencyMode(hProcess, &ecoErr)) {
         result.okCount++;
-        PrintColor(COLOR_GREEN, "  [OK] Efficiency Mode enabled.\n");
+        PrintOk("      [+] %-11s %s\n", "efficiency", "EcoQoS");
     } else {
-        PrintColor(COLOR_RED, "  [FAIL] Enable Efficiency Mode failed. Error=%lu\n", efficiencyErr);
-        PrintErrorHint(efficiencyErr);
+        PrintFail("      [-] %-11s failed (Error=%lu)\n", "efficiency", ecoErr);
+        PrintHint(ecoErr);
     }
 
     CloseHandle(hProcess);
@@ -250,7 +276,7 @@ int wmain(void) {
     SetConsoleOutputCP(CP_UTF8);
 
     if (!IsRunAsAdmin()) {
-        printf("Not running as administrator. Requesting elevation...\n");
+        printf("Requesting administrator privileges...\n");
 
         if (RelaunchAsAdmin()) {
             return 0;
@@ -259,40 +285,41 @@ int wmain(void) {
         DWORD err = GetLastError();
 
         if (err == ERROR_CANCELLED) {
-            PrintColor(COLOR_RED, "FAILED: elevation was cancelled.\n");
+            PrintFail("FAILED: elevation cancelled by user\n");
         } else {
-            PrintColor(COLOR_RED, "FAILED: could not request elevation. Error=%lu\n", err);
+            PrintFail("FAILED: could not request elevation (Error=%lu)\n", err);
         }
 
         PauseBeforeExit();
         return 1;
     }
 
-    printf("SGuard priority / affinity / efficiency tool\n");
-    printf("-------------------------------------------\n");
+    printf("================================================\n");
+    printf(" SGuard priority / affinity / efficiency tool\n");
+    printf("================================================\n\n");
 
-    PrintColor(COLOR_GREEN, "[OK] Running as Administrator.\n");
+    PrintOk(" [+] administrator privileges\n");
 
     DWORD dbgErr = ERROR_SUCCESS;
 
     if (EnableDebugPrivilege(&dbgErr)) {
-        PrintColor(COLOR_GREEN, "[OK] SeDebugPrivilege enabled.\n");
+        PrintOk(" [+] SeDebugPrivilege enabled\n");
     } else {
-        PrintColor(COLOR_YELLOW, "[WARN] SeDebugPrivilege not enabled. Error=%lu\n", dbgErr);
-        PrintColor(COLOR_YELLOW, "       Continuing anyway. Protected processes may still fail.\n");
+        PrintWarn(" [!] SeDebugPrivilege not enabled (Error=%lu)\n", dbgErr);
     }
 
     DWORD cpuCount = GetLogicalCpuCount();
     DWORD_PTR affinityMask = GetLastCpuAffinityMask(cpuCount);
 
-    printf("\nCPU Count      = %lu\n", cpuCount);
-    printf("Target CPU     = CPU %lu\n", cpuCount - 1);
-    printf("Affinity Mask  = 0x%llX\n", (unsigned long long)affinityMask);
+    printf("\n logical CPUs : %lu\n", cpuCount);
+    printf(" target CPU   : %lu\n", cpuCount - 1);
+    printf(" affinity     : 0x%llX\n", (unsigned long long)affinityMask);
+    printf(" targets      : SGuard64.exe, SGuardSvc64.exe\n");
 
     HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
 
     if (snapshot == INVALID_HANDLE_VALUE) {
-        PrintColor(COLOR_RED, "\n[FAIL] CreateToolhelp32Snapshot failed. Error=%lu\n", GetLastError());
+        PrintFail("\n[FAIL] CreateToolhelp32Snapshot failed (Error=%lu)\n", GetLastError());
         PauseBeforeExit();
         return 1;
     }
@@ -301,7 +328,7 @@ int wmain(void) {
     pe.dwSize = sizeof(pe);
 
     if (!Process32FirstW(snapshot, &pe)) {
-        PrintColor(COLOR_RED, "\n[FAIL] Process32FirstW failed. Error=%lu\n", GetLastError());
+        PrintFail("\n[FAIL] Process32FirstW failed (Error=%lu)\n", GetLastError());
         CloseHandle(snapshot);
         PauseBeforeExit();
         return 1;
@@ -320,8 +347,10 @@ int wmain(void) {
         foundCount++;
 
         PROCESS_RESULT r = ConfigureProcess(
+            foundCount,
             pe.th32ProcessID,
             pe.szExeFile,
+            cpuCount - 1,
             affinityMask
         );
 
@@ -337,28 +366,28 @@ int wmain(void) {
 
     CloseHandle(snapshot);
 
-    printf("\n-------------------------------------------\n");
-    printf("Summary\n");
-    printf("-------------------------------------------\n");
-    printf("Found processes       = %d\n", foundCount);
-    printf("Fully successful      = %d\n", fullSuccessCount);
-    printf("Partially successful  = %d\n", partialSuccessCount);
-    printf("Failed                = %d\n", failedCount);
+    printf("\n------------------------------------------------\n");
+    printf(" Summary\n");
+    printf("------------------------------------------------\n");
+    printf(" found        : %d\n", foundCount);
+    printf(" fully ok     : %d\n", fullSuccessCount);
+    printf(" partial      : %d\n", partialSuccessCount);
+    printf(" failed       : %d\n", failedCount);
 
     int exitCode;
 
     if (foundCount == 0) {
-        PrintColor(COLOR_RED, "\nFINAL RESULT: FAILED - no target process found (SGuard64.exe / SGuardSvc64.exe).\n");
+        PrintFail("\n RESULT: FAILED - no target process found\n");
         exitCode = 1;
     } else if (fullSuccessCount == foundCount) {
-        PrintColor(COLOR_GREEN, "\nFINAL RESULT: SUCCESS - all target processes were fully configured.\n");
+        PrintOk("\n RESULT: SUCCESS - all %d processes fully configured\n", foundCount);
         exitCode = 0;
     } else if (fullSuccessCount > 0 || partialSuccessCount > 0) {
-        PrintColor(COLOR_YELLOW, "\nFINAL RESULT: PARTIAL SUCCESS - some settings failed.\n");
+        PrintWarn("\n RESULT: PARTIAL - %d of %d processes fully configured\n", fullSuccessCount, foundCount);
         exitCode = 2;
     } else {
-        PrintColor(COLOR_RED, "\nFINAL RESULT: FAILED - target processes were found, but no setting was applied.\n");
-        PrintColor(COLOR_RED, "Reason: access denied, protected process, or unsupported operation.\n");
+        PrintFail("\n RESULT: FAILED - found %d processes but no setting applied\n", foundCount);
+        PrintFail("        access denied, protected process, or unsupported operation\n");
         exitCode = 3;
     }
 
