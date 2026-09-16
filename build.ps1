@@ -5,7 +5,16 @@ if (-not (Get-Command gcc -ErrorAction SilentlyContinue)) {
     exit 1
 }
 
-gcc -O2 -Wall -Wextra -municode -mconsole fuckace.c -lshell32 -o fuckAce.exe
+windres fuckAce.rc -O coff -o fuckace_res.o
+if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
+}
+
+gcc -Os -Wall -Wextra -municode -mconsole `
+    -s -fno-asynchronous-unwind-tables `
+    -ffunction-sections -fdata-sections `
+    "-Wl,--gc-sections" "-Wl,--file-alignment=512" `
+    fuckace.c fuckace_res.o -o fuckAce.exe
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }

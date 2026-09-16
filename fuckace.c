@@ -2,7 +2,6 @@
 
 #include <windows.h>
 #include <tlhelp32.h>
-#include <shellapi.h>
 #include <stdio.h>
 #include <wchar.h>
 #include <stdarg.h>
@@ -22,73 +21,331 @@ typedef struct _PROCESS_POWER_THROTTLING_STATE {
 #endif
 
 #define COLOR_DEFAULT 7
-#define COLOR_GREEN   10
-#define COLOR_RED     12
-#define COLOR_YELLOW  14
+#define COLOR_WHITE   (FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE | FOREGROUND_INTENSITY)
+#define COLOR_FRAME   (FOREGROUND_BLUE | FOREGROUND_INTENSITY)
+#define COLOR_HEAD    (FOREGROUND_GREEN | FOREGROUND_BLUE | FOREGROUND_INTENSITY)
+#define COLOR_OK      (FOREGROUND_GREEN | FOREGROUND_INTENSITY)
+#define COLOR_FAIL    (FOREGROUND_RED | FOREGROUND_INTENSITY)
+#define COLOR_WARN    (FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_INTENSITY)
+
+#define COLOR_TITLE   (BACKGROUND_BLUE | BACKGROUND_INTENSITY | \
+                       FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE | FOREGROUND_INTENSITY)
+#define COLOR_OK_BG   (BACKGROUND_GREEN | BACKGROUND_INTENSITY)
+#define COLOR_FAIL_BG (BACKGROUND_RED | BACKGROUND_INTENSITY | \
+                       FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE | FOREGROUND_INTENSITY)
+#define COLOR_WARN_BG (BACKGROUND_RED | BACKGROUND_GREEN | BACKGROUND_INTENSITY)
 
 #define STEP_COUNT 3
+#define MAX_TARGETS 256
+#define CONTENT_WIDTH 86
 
 typedef struct _PROCESS_RESULT {
     BOOL opened;
     int okCount;
+    DWORD openErr;
+    DWORD priErr;
+    DWORD affErr;
+    DWORD ecoErr;
 } PROCESS_RESULT;
 
+typedef struct _TARGET {
+    DWORD pid;
+    wchar_t name[32];
+} TARGET;
+
+typedef struct _SEG {
+    char text[200];
+    WORD color;
+} SEG;
+
 static HANDLE g_console;
+static int g_width = 60;
 
-static void PrintColorV(WORD color, const char *fmt, va_list args) {
+static int Utf8Len(const char *s) {
+    int n = 0;
+
+    for (; *s; s++) {
+        if ((*s & 0xC0) != 0x80) {
+            n++;
+        }
+    }
+
+    return n;
+}
+
+static void SetColor(WORD color) {
     SetConsoleTextAttribute(g_console, color);
-    vprintf(fmt, args);
-    SetConsoleTextAttribute(g_console, COLOR_DEFAULT);
 }
 
-static void PrintOk(const char *fmt, ...) {
-    va_list args;
-
-    va_start(args, fmt);
-    PrintColorV(COLOR_GREEN, fmt, args);
-    va_end(args);
-}
-
-static void PrintFail(const char *fmt, ...) {
-    va_list args;
-
-    va_start(args, fmt);
-    PrintColorV(COLOR_RED, fmt, args);
-    va_end(args);
-}
-
-static void PrintWarn(const char *fmt, ...) {
-    va_list args;
-
-    va_start(args, fmt);
-    PrintColorV(COLOR_YELLOW, fmt, args);
-    va_end(args);
-}
-
-static void PrintHint(DWORD err) {
-    const char *hint = NULL;
-
+static const char *ShortReason(DWORD err) {
     switch (err) {
     case ERROR_ACCESS_DENIED:
-        hint = "access denied, process may be protected";
-        break;
+        return "access denied";
     case ERROR_INVALID_PARAMETER:
-        hint = "invalid parameter, operation may be unsupported";
-        break;
+        return "invalid param";
     case ERROR_NOT_SUPPORTED:
-        hint = "operation not supported on this system";
-        break;
+        return "unsupported";
+    }
+    return "";
+}
+
+static void ClearScreen(void) {
+    DWORD mode = 0;
+
+    if (GetConsoleMode(g_console, &mode) &&
+        SetConsoleMode(g_console, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING)) {
+        fputs("\x1b[2J\x1b[3J\x1b[H", stdout);
+        fflush(stdout);
+        return;
     }
 
-    if (hint) {
-        PrintFail("            hint: %s\n", hint);
+    CONSOLE_SCREEN_BUFFER_INFO csbi;
+    DWORD cells;
+    DWORD written;
+    COORD origin = {0, 0};
+
+    if (!GetConsoleScreenBufferInfo(g_console, &csbi)) {
+        return;
+    }
+
+    cells = (DWORD)csbi.dwSize.X * (DWORD)csbi.dwSize.Y;
+
+    FillConsoleOutputCharacterW(g_console, L' ', cells, origin, &written);
+    FillConsoleOutputAttribute(g_console, COLOR_DEFAULT, cells, origin, &written);
+    SetConsoleCursorPosition(g_console, origin);
+}
+
+static void LayoutConsole(int contentRows) {
+    CONSOLE_SCREEN_BUFFER_INFO csbi;
+    COORD max;
+    COORD size;
+    COORD origin = {0, 0};
+    SMALL_RECT tmp;
+    SMALL_RECT rect;
+    DWORD cells;
+    DWORD written;
+    int curW;
+    int curH;
+    int wantW;
+    int wantH;
+    int bufH;
+
+    if (!GetConsoleScreenBufferInfo(g_console, &csbi)) {
+        g_width = CONTENT_WIDTH;
+        return;
+    }
+
+    curW = csbi.srWindow.Right - csbi.srWindow.Left + 1;
+    curH = csbi.srWindow.Bottom - csbi.srWindow.Top + 1;
+    max = GetLargestConsoleWindowSize(g_console);
+
+    wantW = CONTENT_WIDTH;
+    wantH = contentRows + 3;
+
+    if (wantH < 24) {
+        wantH = 24;
+    }
+    if (wantW > max.X) {
+        wantW = max.X;
+    }
+    if (wantH > max.Y) {
+        wantH = max.Y;
+    }
+
+    bufH = wantH;
+
+    if (curW == wantW && curH == wantH &&
+        csbi.dwSize.X == wantW && csbi.dwSize.Y == bufH) {
+        g_width = wantW;
+        return;
+    }
+
+    tmp.Left = 0;
+    tmp.Top = 0;
+    tmp.Right = 1;
+    tmp.Bottom = 1;
+    SetConsoleWindowInfo(g_console, TRUE, &tmp);
+
+    size.X = (SHORT)wantW;
+    size.Y = (SHORT)bufH;
+
+    if (!SetConsoleScreenBufferSize(g_console, size)) {
+        SetConsoleWindowInfo(g_console, TRUE, &csbi.srWindow);
+        g_width = curW;
+        return;
+    }
+
+    rect.Left = 0;
+    rect.Top = 0;
+    rect.Right = (SHORT)(wantW - 1);
+    rect.Bottom = (SHORT)(wantH - 1);
+    SetConsoleWindowInfo(g_console, TRUE, &rect);
+
+    cells = (DWORD)wantW * (DWORD)bufH;
+    FillConsoleOutputCharacterW(g_console, L' ', cells, origin, &written);
+    FillConsoleOutputAttribute(g_console, COLOR_DEFAULT, cells, origin, &written);
+    SetConsoleCursorPosition(g_console, origin);
+
+    if (GetConsoleScreenBufferInfo(g_console, &csbi)) {
+        g_width = csbi.srWindow.Right - csbi.srWindow.Left + 1;
+    } else {
+        g_width = wantW;
     }
 }
 
-static void PauseBeforeExit(void) {
+static void WaitForExit(void) {
+    SetColor(COLOR_HEAD);
     printf("\nPress Enter to exit...");
+    SetColor(COLOR_DEFAULT);
     fflush(stdout);
     getchar();
+}
+
+static int WaitForRetry(void) {
+    int esc = 0;
+    int ch;
+
+    SetColor(COLOR_HEAD);
+    printf("\nPress Enter to retry, Esc to exit...");
+    SetColor(COLOR_DEFAULT);
+    fflush(stdout);
+
+    for (;;) {
+        ch = getchar();
+
+        if (ch == EOF) {
+            break;
+        }
+        if (ch == 27) {
+            esc = 1;
+        } else if (ch == '\n') {
+            break;
+        }
+    }
+
+    return esc ? 0 : 1;
+}
+
+static SEG *SegSet(SEG *seg, WORD color, const char *fmt, ...) {
+    va_list args;
+
+    va_start(args, fmt);
+    vsnprintf(seg->text, sizeof(seg->text), fmt, args);
+    va_end(args);
+    seg->color = color;
+    return seg;
+}
+
+static void BoxRule(const char *left, const char *right) {
+    int i;
+
+    SetColor(COLOR_FRAME);
+    fputs(left, stdout);
+    for (i = 0; i < g_width - 2; i++) {
+        fputs("─", stdout);
+    }
+    fputs(right, stdout);
+    putchar('\n');
+    SetColor(COLOR_DEFAULT);
+}
+
+static void BoxRow(int count, const SEG *segs) {
+    int used = 0;
+    int i;
+
+    SetColor(COLOR_FRAME);
+    fputs("│ ", stdout);
+    for (i = 0; i < count; i++) {
+        SetColor(segs[i].color);
+        fputs(segs[i].text, stdout);
+        used += Utf8Len(segs[i].text);
+    }
+    SetColor(COLOR_FRAME);
+    for (i = 0; i < g_width - 4 - used; i++) {
+        putchar(' ');
+    }
+    fputs(" │", stdout);
+    putchar('\n');
+    SetColor(COLOR_DEFAULT);
+}
+
+static void BoxLine(WORD color, const char *fmt, ...) {
+    SEG seg;
+    va_list args;
+
+    va_start(args, fmt);
+    vsnprintf(seg.text, sizeof(seg.text), fmt, args);
+    va_end(args);
+    seg.color = color;
+    BoxRow(1, &seg);
+}
+
+static void BoxBar(WORD color, const char *fmt, ...) {
+    char text[200];
+    va_list args;
+    int used;
+    int i;
+
+    va_start(args, fmt);
+    vsnprintf(text, sizeof(text), fmt, args);
+    va_end(args);
+
+    used = Utf8Len(text);
+
+    SetColor(COLOR_FRAME);
+    fputs("│ ", stdout);
+    SetColor(color);
+    fputs(text, stdout);
+    for (i = 0; i < g_width - 4 - used; i++) {
+        putchar(' ');
+    }
+    SetColor(COLOR_FRAME);
+    fputs(" │", stdout);
+    putchar('\n');
+    SetColor(COLOR_DEFAULT);
+}
+
+static void SegCell(SEG *seg, BOOL attempted, BOOL ok, DWORD err) {
+    if (!attempted) {
+        SegSet(seg, COLOR_FRAME, "-    ");
+    } else if (ok) {
+        SegSet(seg, COLOR_OK_BG, "✓    ");
+    } else {
+        SegSet(seg, COLOR_FAIL_BG, "✗%-4lu", err);
+    }
+}
+
+static void AddNote(char *buf, size_t size, size_t *pos, const char *fmt, ...) {
+    va_list args;
+    int written;
+
+    if (*pos >= size - 1) {
+        return;
+    }
+
+    va_start(args, fmt);
+    written = vsnprintf(buf + *pos, size - *pos, fmt, args);
+    va_end(args);
+
+    if (written > 0) {
+        *pos += (size_t)written;
+        if (*pos >= size - 1) {
+            *pos = size - 1;
+        }
+    }
+}
+
+static void TallyError(DWORD err, int *denied, int *unsupported, int *other) {
+    if (err == ERROR_SUCCESS) {
+        return;
+    }
+    if (err == ERROR_ACCESS_DENIED) {
+        (*denied)++;
+    } else if (err == ERROR_NOT_SUPPORTED) {
+        (*unsupported)++;
+    } else {
+        (*other)++;
+    }
 }
 
 static BOOL IsRunAsAdmin(void) {
@@ -110,22 +367,6 @@ static BOOL IsRunAsAdmin(void) {
     }
 
     return isAdmin;
-}
-
-static BOOL RelaunchAsAdmin(void) {
-    wchar_t exePath[MAX_PATH];
-
-    if (!GetModuleFileNameW(NULL, exePath, MAX_PATH)) {
-        return FALSE;
-    }
-
-    SHELLEXECUTEINFOW sei = {0};
-    sei.cbSize = sizeof(sei);
-    sei.lpVerb = L"runas";
-    sei.lpFile = exePath;
-    sei.nShow = SW_SHOWNORMAL;
-
-    return ShellExecuteExW(&sei);
 }
 
 static BOOL EnableDebugPrivilege(DWORD *outError) {
@@ -216,143 +457,225 @@ static BOOL IsTargetProcess(const wchar_t *name) {
         _wcsicmp(name, L"SGuardSvc64.exe") == 0;
 }
 
+static int ScanTargets(TARGET *targets, int cap, DWORD *outError) {
+    HANDLE snapshot;
+    PROCESSENTRY32W pe = {0};
+    int n = 0;
+
+    *outError = 0;
+
+    snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+
+    if (snapshot == INVALID_HANDLE_VALUE) {
+        *outError = GetLastError();
+        return -1;
+    }
+
+    pe.dwSize = sizeof(pe);
+
+    if (!Process32FirstW(snapshot, &pe)) {
+        *outError = GetLastError();
+        CloseHandle(snapshot);
+        return -1;
+    }
+
+    do {
+        if (IsTargetProcess(pe.szExeFile) && n < cap) {
+            targets[n].pid = pe.th32ProcessID;
+            wcsncpy(targets[n].name, pe.szExeFile, 31);
+            targets[n].name[31] = 0;
+            n++;
+        }
+    } while (Process32NextW(snapshot, &pe));
+
+    CloseHandle(snapshot);
+    return n;
+}
+
 static PROCESS_RESULT ConfigureProcess(
     int index,
     DWORD pid,
     const wchar_t *processName,
-    DWORD targetCpu,
     DWORD_PTR affinityMask
 ) {
     PROCESS_RESULT result = {0};
-
-    printf("\n #%-2d %ls  (PID %lu)\n", index, processName, pid);
+    DWORD openErr = 0;
+    DWORD priErr = 0;
+    DWORD affErr = 0;
+    DWORD ecoErr = 0;
+    BOOL priOk = FALSE;
+    BOOL affOk = FALSE;
+    BOOL ecoOk = FALSE;
 
     HANDLE hProcess = OpenProcess(PROCESS_SET_INFORMATION, FALSE, pid);
 
     if (!hProcess) {
-        DWORD err = GetLastError();
-        PrintFail("      [-] %-11s failed (Error=%lu)\n", "open", err);
-        PrintHint(err);
-        return result;
-    }
-
-    result.opened = TRUE;
-
-    if (SetPriorityClass(hProcess, IDLE_PRIORITY_CLASS)) {
-        result.okCount++;
-        PrintOk("      [+] %-11s %s\n", "priority", "IDLE");
+        openErr = GetLastError();
     } else {
-        DWORD err = GetLastError();
-        PrintFail("      [-] %-11s failed (Error=%lu)\n", "priority", err);
-        PrintHint(err);
+        result.opened = TRUE;
+
+        priOk = SetPriorityClass(hProcess, IDLE_PRIORITY_CLASS);
+
+        if (!priOk) {
+            priErr = GetLastError();
+        }
+
+        affOk = SetProcessAffinityMask(hProcess, affinityMask);
+
+        if (!affOk) {
+            affErr = GetLastError();
+        }
+
+        ecoOk = EnableEfficiencyMode(hProcess, &ecoErr);
+
+        CloseHandle(hProcess);
     }
 
-    if (SetProcessAffinityMask(hProcess, affinityMask)) {
-        result.okCount++;
-        PrintOk("      [+] %-11s CPU %lu\n", "affinity", targetCpu);
-    } else {
-        DWORD err = GetLastError();
-        PrintFail("      [-] %-11s failed (Error=%lu)\n", "affinity", err);
-        PrintHint(err);
+    result.okCount = priOk + affOk + ecoOk;
+    result.openErr = openErr;
+    result.priErr = priErr;
+    result.affErr = affErr;
+    result.ecoErr = ecoErr;
+
+    SEG row[8];
+
+    SegSet(&row[0], COLOR_HEAD, " %2d  ", index);
+    SegSet(&row[1], COLOR_WHITE, "%-17ls", processName);
+    SegSet(&row[2], COLOR_WARN, " %5lu   ", pid);
+    SegCell(&row[3], result.opened, priOk, priErr);
+    SegSet(&row[4], COLOR_FRAME, " ");
+    SegCell(&row[5], result.opened, affOk, affErr);
+    SegSet(&row[6], COLOR_FRAME, " ");
+    SegCell(&row[7], result.opened, ecoOk, ecoErr);
+    BoxRow(8, row);
+
+    if (!result.opened || result.okCount < STEP_COUNT) {
+        char note[256] = "";
+        size_t pos = 0;
+
+        if (!result.opened) {
+            AddNote(note, sizeof(note), &pos, "open:%lu(%s)", openErr, ShortReason(openErr));
+        }
+        if (!priOk && result.opened) {
+            if (pos) {
+                AddNote(note, sizeof(note), &pos, " · ");
+            }
+            AddNote(note, sizeof(note), &pos, "pri:%lu(%s)", priErr, ShortReason(priErr));
+        }
+        if (!affOk && result.opened) {
+            if (pos) {
+                AddNote(note, sizeof(note), &pos, " · ");
+            }
+            AddNote(note, sizeof(note), &pos, "aff:%lu(%s)", affErr, ShortReason(affErr));
+        }
+        if (!ecoOk && result.opened) {
+            if (pos) {
+                AddNote(note, sizeof(note), &pos, " · ");
+            }
+            AddNote(note, sizeof(note), &pos, "eco:%lu(%s)", ecoErr, ShortReason(ecoErr));
+        }
+
+        BoxLine(COLOR_WARN, "       %s", note);
     }
-
-    DWORD ecoErr = ERROR_SUCCESS;
-
-    if (EnableEfficiencyMode(hProcess, &ecoErr)) {
-        result.okCount++;
-        PrintOk("      [+] %-11s %s\n", "efficiency", "EcoQoS");
-    } else {
-        PrintFail("      [-] %-11s failed (Error=%lu)\n", "efficiency", ecoErr);
-        PrintHint(ecoErr);
-    }
-
-    CloseHandle(hProcess);
 
     return result;
 }
 
-int wmain(void) {
-    g_console = GetStdHandle(STD_OUTPUT_HANDLE);
-    SetConsoleOutputCP(CP_UTF8);
+static int RunOnce(void) {
+    ULONGLONG t0 = GetTickCount64();
+
+    static TARGET targets[MAX_TARGETS];
+    DWORD scanErr = 0;
+    int targetCount = ScanTargets(targets, MAX_TARGETS, &scanErr);
+
+    ClearScreen();
+    LayoutConsole(16 + 2 * (targetCount > 0 ? targetCount : 0));
 
     if (!IsRunAsAdmin()) {
-        printf("Requesting administrator privileges...\n");
-
-        if (RelaunchAsAdmin()) {
-            return 0;
-        }
-
-        DWORD err = GetLastError();
-
-        if (err == ERROR_CANCELLED) {
-            PrintFail("FAILED: elevation cancelled by user\n");
-        } else {
-            PrintFail("FAILED: could not request elevation (Error=%lu)\n", err);
-        }
-
-        PauseBeforeExit();
+        BoxRule("┌", "┐");
+        BoxBar(COLOR_FAIL_BG, " ✗ administrator privileges required");
+        BoxRule("└", "┘");
         return 1;
     }
 
-    printf("================================================\n");
-    printf(" fuckAce - SGuard priority/affinity/efficiency\n");
-    printf("================================================\n\n");
-
-    PrintOk(" [+] administrator privileges\n");
-
     DWORD dbgErr = ERROR_SUCCESS;
-
-    if (EnableDebugPrivilege(&dbgErr)) {
-        PrintOk(" [+] SeDebugPrivilege enabled\n");
-    } else {
-        PrintWarn(" [!] SeDebugPrivilege not enabled (Error=%lu)\n", dbgErr);
-    }
+    BOOL dbgOk = EnableDebugPrivilege(&dbgErr);
 
     DWORD cpuCount = GetLogicalCpuCount();
     DWORD_PTR affinityMask = GetLastCpuAffinityMask(cpuCount);
 
-    printf("\n logical CPUs : %lu\n", cpuCount);
-    printf(" target CPU   : %lu\n", cpuCount - 1);
-    printf(" affinity     : 0x%llX\n", (unsigned long long)affinityMask);
-    printf(" targets      : SGuard64.exe, SGuardSvc64.exe\n");
+    BoxRule("┌", "┐");
+    BoxBar(COLOR_TITLE, " fuckAce · SGuard64 / SGuardSvc64 limiter");
 
-    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    SEG status[10];
+    int n = 0;
 
-    if (snapshot == INVALID_HANDLE_VALUE) {
-        PrintFail("\n[FAIL] CreateToolhelp32Snapshot failed (Error=%lu)\n", GetLastError());
-        PauseBeforeExit();
+    SegSet(&status[n++], COLOR_OK_BG, " ✓ admin");
+    SegSet(&status[n++], COLOR_HEAD, " · ");
+    if (dbgOk) {
+        SegSet(&status[n++], COLOR_OK_BG, " ✓ SeDebugPrivilege");
+    } else {
+        SegSet(&status[n++], COLOR_WARN_BG, " ! SeDebugPrivilege(%lu)", dbgErr);
+    }
+    SegSet(&status[n++], COLOR_HEAD, " · ");
+    SegSet(&status[n++], COLOR_WHITE, "%lu CPUs", cpuCount);
+    SegSet(&status[n++], COLOR_HEAD, " → CPU ");
+    SegSet(&status[n++], COLOR_WHITE, "%lu", cpuCount - 1);
+    SegSet(&status[n++], COLOR_HEAD, " · mask ");
+    SegSet(&status[n++], COLOR_WARN, "0x%llX", (unsigned long long)affinityMask);
+    BoxRow(n, status);
+
+    if (targetCount < 0) {
+        BoxRule("├", "┤");
+        BoxBar(COLOR_FAIL_BG, " ✗ process scan failed (Error=%lu)", scanErr);
+        BoxRule("└", "┘");
         return 1;
     }
 
-    PROCESSENTRY32W pe = {0};
-    pe.dwSize = sizeof(pe);
-
-    if (!Process32FirstW(snapshot, &pe)) {
-        PrintFail("\n[FAIL] Process32FirstW failed (Error=%lu)\n", GetLastError());
-        CloseHandle(snapshot);
-        PauseBeforeExit();
-        return 1;
-    }
+    BoxRule("├", "┤");
+    BoxLine(COLOR_HEAD, "  #  %-17s %5s   %-5s %-5s %s",
+            "PROCESS", "PID", "PRI", "AFF", "ECO");
 
     int foundCount = 0;
     int fullSuccessCount = 0;
     int partialSuccessCount = 0;
     int failedCount = 0;
+    int openedCount = 0;
+    int appliedPriority = 0;
+    int appliedAffinity = 0;
+    int appliedEco = 0;
+    int deniedCount = 0;
+    int unsupportedCount = 0;
+    int otherErrCount = 0;
+    int i;
 
-    do {
-        if (!IsTargetProcess(pe.szExeFile)) {
-            continue;
-        }
-
+    for (i = 0; i < targetCount; i++) {
         foundCount++;
 
         PROCESS_RESULT r = ConfigureProcess(
             foundCount,
-            pe.th32ProcessID,
-            pe.szExeFile,
-            cpuCount - 1,
+            targets[i].pid,
+            targets[i].name,
             affinityMask
         );
+
+        if (r.opened) {
+            openedCount++;
+        }
+        if (r.opened && r.priErr == ERROR_SUCCESS) {
+            appliedPriority++;
+        }
+        if (r.opened && r.affErr == ERROR_SUCCESS) {
+            appliedAffinity++;
+        }
+        if (r.opened && r.ecoErr == ERROR_SUCCESS) {
+            appliedEco++;
+        }
+
+        TallyError(r.openErr, &deniedCount, &unsupportedCount, &otherErrCount);
+        TallyError(r.priErr, &deniedCount, &unsupportedCount, &otherErrCount);
+        TallyError(r.affErr, &deniedCount, &unsupportedCount, &otherErrCount);
+        TallyError(r.ecoErr, &deniedCount, &unsupportedCount, &otherErrCount);
 
         if (r.opened && r.okCount == STEP_COUNT) {
             fullSuccessCount++;
@@ -361,37 +684,161 @@ int wmain(void) {
         } else {
             failedCount++;
         }
+    }
 
-    } while (Process32NextW(snapshot, &pe));
+    BoxRule("├", "┤");
 
-    CloseHandle(snapshot);
+    SEG sum[8];
+    int k = 0;
 
-    printf("\n------------------------------------------------\n");
-    printf(" Summary\n");
-    printf("------------------------------------------------\n");
-    printf(" found        : %d\n", foundCount);
-    printf(" fully ok     : %d\n", fullSuccessCount);
-    printf(" partial      : %d\n", partialSuccessCount);
-    printf(" failed       : %d\n", failedCount);
+    SegSet(&sum[k++], COLOR_HEAD, " found ");
+    SegSet(&sum[k++], COLOR_WHITE, "%d", foundCount);
+    SegSet(&sum[k++], COLOR_HEAD, " · full ");
+    SegSet(&sum[k++], COLOR_OK, "%d", fullSuccessCount);
+    SegSet(&sum[k++], COLOR_HEAD, " · partial ");
+    SegSet(&sum[k++], COLOR_WARN, "%d", partialSuccessCount);
+    SegSet(&sum[k++], COLOR_HEAD, " · failed ");
+    SegSet(&sum[k++], COLOR_FAIL, "%d", failedCount);
+    BoxRow(k, sum);
+
+    SEG applied[10];
+    int a = 0;
+
+    if (foundCount > 0) {
+        SegSet(&applied[a++], COLOR_HEAD, " applied  priority→IDLE ");
+        SegSet(&applied[a++], appliedPriority ? COLOR_OK : COLOR_FAIL, "%d", appliedPriority);
+        SegSet(&applied[a++], COLOR_HEAD, " · affinity→CPU %lu ", cpuCount - 1);
+        SegSet(&applied[a++], appliedAffinity ? COLOR_OK : COLOR_FAIL, "%d", appliedAffinity);
+        SegSet(&applied[a++], COLOR_HEAD, " · EcoQoS ");
+        SegSet(&applied[a++], appliedEco ? COLOR_OK : COLOR_FAIL, "%d", appliedEco);
+        SegSet(&applied[a++], COLOR_HEAD, "   (opened %d/%d)", openedCount, foundCount);
+        BoxRow(a, applied);
+
+        if (deniedCount == 0 && unsupportedCount == 0 && otherErrCount == 0) {
+            BoxLine(COLOR_OK, " diagnostics  no errors — every attempted operation succeeded");
+        } else {
+            SEG diag[8];
+            int d = 0;
+
+            SegSet(&diag[d++], COLOR_HEAD, " diagnostics ");
+            if (deniedCount > 0) {
+                SegSet(&diag[d++], COLOR_FAIL, " access-denied %d", deniedCount);
+            }
+            if (unsupportedCount > 0) {
+                SegSet(&diag[d++], COLOR_WARN, "%sunsupported %d",
+                       deniedCount > 0 ? " · " : " ", unsupportedCount);
+            }
+            if (otherErrCount > 0) {
+                SegSet(&diag[d++], COLOR_WARN, "%sother %d",
+                       (deniedCount > 0 || unsupportedCount > 0) ? " · " : " ",
+                       otherErrCount);
+            }
+            BoxRow(d, diag);
+        }
+    }
 
     int exitCode;
 
     if (foundCount == 0) {
-        PrintFail("\n RESULT: FAILED - no target process found\n");
+        BoxBar(COLOR_FAIL_BG, " ✗ FAILED - no target process found");
         exitCode = 1;
     } else if (fullSuccessCount == foundCount) {
-        PrintOk("\n RESULT: SUCCESS - all %d processes fully configured\n", foundCount);
+        BoxBar(COLOR_OK_BG, " ✓ SUCCESS - all %d processes fully configured", foundCount);
         exitCode = 0;
     } else if (fullSuccessCount > 0 || partialSuccessCount > 0) {
-        PrintWarn("\n RESULT: PARTIAL - %d of %d processes fully configured\n", fullSuccessCount, foundCount);
+        BoxBar(COLOR_WARN_BG, " ! PARTIAL - %d of %d processes fully configured",
+               fullSuccessCount, foundCount);
         exitCode = 2;
     } else {
-        PrintFail("\n RESULT: FAILED - found %d processes but no setting applied\n", foundCount);
-        PrintFail("        access denied, protected process, or unsupported operation\n");
+        BoxBar(COLOR_FAIL_BG, " ✗ FAILED - found %d processes but no setting applied", foundCount);
+        BoxBar(COLOR_FAIL_BG, "   access denied, protected process, or unsupported operation");
         exitCode = 3;
     }
 
-    PauseBeforeExit();
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+
+    BoxRule("├", "┤");
+
+    if (foundCount > 0) {
+        SEG tgt[16];
+        int t = 0;
+        int j;
+
+        SegSet(&tgt[t++], COLOR_HEAD, " targets ");
+
+        for (i = 0; i < targetCount && t < 13; i++) {
+            BOOL dup = FALSE;
+            int cnt = 0;
+
+            for (j = 0; j < i; j++) {
+                if (_wcsicmp(targets[j].name, targets[i].name) == 0) {
+                    dup = TRUE;
+                    break;
+                }
+            }
+            if (dup) {
+                continue;
+            }
+
+            for (j = 0; j < targetCount; j++) {
+                if (_wcsicmp(targets[j].name, targets[i].name) == 0) {
+                    cnt++;
+                }
+            }
+
+            const char *sep = t > 1 ? " · " : " ";
+
+            SegSet(&tgt[t++], COLOR_HEAD, "%s", sep);
+            SegSet(&tgt[t++], COLOR_WHITE, "%ls", targets[i].name);
+            SegSet(&tgt[t++], COLOR_WARN, " ×%d", cnt);
+        }
+        BoxRow(t, tgt);
+    }
+
+    char machine[MAX_COMPUTERNAME_LENGTH + 2];
+    DWORD machineLen = sizeof(machine);
+
+    if (!GetComputerNameA(machine, &machineLen)) {
+        machine[0] = 0;
+    }
+
+    SEG timing[8];
+    int m = 0;
+
+    SegSet(&timing[m++], COLOR_HEAD, " timing   ");
+    SegSet(&timing[m++], COLOR_WHITE, "%04d-%02d-%02d %02d:%02d:%02d",
+           st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+    SegSet(&timing[m++], COLOR_HEAD, " · ");
+    SegSet(&timing[m++], COLOR_WHITE, "%llu ms",
+           (unsigned long long)(GetTickCount64() - t0));
+    SegSet(&timing[m++], COLOR_HEAD, " · ");
+    SegSet(&timing[m++], COLOR_WHITE, "%s", machine);
+    BoxRow(m, timing);
+
+    BoxRule("└", "┘");
 
     return exitCode;
+}
+
+int wmain(void) {
+    g_console = GetStdHandle(STD_OUTPUT_HANDLE);
+    SetConsoleOutputCP(CP_UTF8);
+
+    int code;
+
+    for (;;) {
+        code = RunOnce();
+
+        if (code == 0) {
+            WaitForExit();
+            break;
+        }
+
+        if (!WaitForRetry()) {
+            break;
+        }
+    }
+
+    return code;
 }
