@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <wchar.h>
 #include <stdarg.h>
+#include <conio.h>
 
 #ifndef ProcessPowerThrottling
 #define ProcessPowerThrottling 4
@@ -38,6 +39,9 @@ typedef struct _PROCESS_POWER_THROTTLING_STATE {
 #define STEP_COUNT 3
 #define MAX_TARGETS 256
 #define CONTENT_WIDTH 86
+#define CELL_W 16
+#define RETRY_SECONDS 5
+#define EXIT_SECONDS 10
 
 typedef struct _PROCESS_RESULT {
     BOOL opened;
@@ -194,36 +198,100 @@ static void LayoutConsole(int contentRows) {
 }
 
 static void WaitForExit(void) {
-    SetColor(COLOR_HEAD);
-    printf("\nPress Enter to exit...");
-    SetColor(COLOR_DEFAULT);
-    fflush(stdout);
-    getchar();
-}
-
-static int WaitForRetry(void) {
-    int esc = 0;
+    int remaining = EXIT_SECONDS;
     int ch;
+    int tick;
+    COORD numPos = {0, 0};
+    CONSOLE_SCREEN_BUFFER_INFO csbi;
 
     SetColor(COLOR_HEAD);
-    printf("\nPress Enter to retry, Esc to exit...");
+    printf("\nAuto-exit in");
+    fflush(stdout);
+
+    if (GetConsoleScreenBufferInfo(g_console, &csbi)) {
+        numPos = csbi.dwCursorPosition;
+    }
+
+    printf("%2d s  (Enter = exit now)", remaining);
     SetColor(COLOR_DEFAULT);
     fflush(stdout);
 
     for (;;) {
-        ch = getchar();
+        for (tick = 0; tick < 20; tick++) {
+            if (_kbhit()) {
+                ch = _getch();
 
-        if (ch == EOF) {
+                if (ch == '\r' || ch == '\n' || ch == 27) {
+                    printf("\n");
+                    return;
+                }
+            }
+            Sleep(50);
+        }
+
+        if (--remaining <= 0) {
             break;
         }
-        if (ch == 27) {
-            esc = 1;
-        } else if (ch == '\n') {
-            break;
-        }
+
+        SetConsoleCursorPosition(g_console, numPos);
+        SetColor(COLOR_HEAD);
+        printf("%2d", remaining);
+        SetColor(COLOR_DEFAULT);
+        fflush(stdout);
     }
 
-    return esc ? 0 : 1;
+    printf("\n");
+}
+
+static int WaitForRetry(void) {
+    int remaining = RETRY_SECONDS;
+    int ch;
+    int tick;
+    COORD numPos = {0, 0};
+    CONSOLE_SCREEN_BUFFER_INFO csbi;
+
+    SetColor(COLOR_HEAD);
+    printf("\nAuto-retry in");
+    fflush(stdout);
+
+    if (GetConsoleScreenBufferInfo(g_console, &csbi)) {
+        numPos = csbi.dwCursorPosition;
+    }
+
+    printf("%2d s  (Enter = retry now, Esc = exit)", remaining);
+    SetColor(COLOR_DEFAULT);
+    fflush(stdout);
+
+    for (;;) {
+        for (tick = 0; tick < 20; tick++) {
+            if (_kbhit()) {
+                ch = _getch();
+
+                if (ch == 27) {
+                    printf("\n");
+                    return 0;
+                }
+                if (ch == '\r' || ch == '\n') {
+                    printf("\n");
+                    return 1;
+                }
+            }
+            Sleep(50);
+        }
+
+        if (--remaining <= 0) {
+            break;
+        }
+
+        SetConsoleCursorPosition(g_console, numPos);
+        SetColor(COLOR_HEAD);
+        printf("%2d", remaining);
+        SetColor(COLOR_DEFAULT);
+        fflush(stdout);
+    }
+
+    printf("\n");
+    return 1;
 }
 
 static SEG *SegSet(SEG *seg, WORD color, const char *fmt, ...) {
@@ -306,13 +374,21 @@ static void BoxBar(WORD color, const char *fmt, ...) {
 }
 
 static void SegCell(SEG *seg, BOOL attempted, BOOL ok, DWORD err) {
+    char body[24];
+    WORD color;
+
     if (!attempted) {
-        SegSet(seg, COLOR_FRAME, "-    ");
+        snprintf(body, sizeof(body), "-");
+        color = COLOR_FRAME;
     } else if (ok) {
-        SegSet(seg, COLOR_OK_BG, "✓    ");
+        snprintf(body, sizeof(body), "OK");
+        color = COLOR_OK_BG;
     } else {
-        SegSet(seg, COLOR_FAIL_BG, "✗%-4lu", err);
+        snprintf(body, sizeof(body), "✗%lu", (unsigned long)err);
+        color = COLOR_FAIL_BG;
     }
+
+    SegSet(seg, color, "%-*s", CELL_W, body);
 }
 
 static void AddNote(char *buf, size_t size, size_t *pos, const char *fmt, ...) {
@@ -633,8 +709,11 @@ static int RunOnce(void) {
     }
 
     BoxRule("├", "┤");
-    BoxLine(COLOR_HEAD, "  #  %-17s %5s   %-5s %-5s %s",
-            "PROCESS", "PID", "PRI", "AFF", "ECO");
+    BoxLine(COLOR_HEAD, "  #  %-17s %5s   %-*s %-*s %-*s",
+            "PROCESS", "PID",
+            CELL_W, "PRIORITY",
+            CELL_W, "AFFINITY",
+            CELL_W, "ECOQOS");
 
     int foundCount = 0;
     int fullSuccessCount = 0;
