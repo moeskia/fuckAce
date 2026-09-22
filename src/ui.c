@@ -21,18 +21,19 @@ void UIShowCursor(BOOL show) {
 }
 
 void UIResetCursor(void) {
-    CONSOLE_SCREEN_BUFFER_INFO csbi;
-    COORD origin = {0, 0};
-    if (GetConsoleScreenBufferInfo(g_console, &csbi)) {
-        if (csbi.srWindow.Top != 0) {
-            SMALL_RECT rect = csbi.srWindow;
-            SHORT h = rect.Bottom - rect.Top;
-            rect.Top = 0;
-            rect.Bottom = h;
-            SetConsoleWindowInfo(g_console, TRUE, &rect);
-        }
+    DWORD mode = 0;
+    if (GetConsoleMode(g_console, &mode) &&
+        (mode & ENABLE_VIRTUAL_TERMINAL_PROCESSING)) {
+        fputs("\x1b[H", stdout);
+        fflush(stdout);
+        return;
     }
-    SetConsoleCursorPosition(g_console, origin);
+
+    CONSOLE_SCREEN_BUFFER_INFO csbi;
+    if (GetConsoleScreenBufferInfo(g_console, &csbi)) {
+        COORD origin = {0, csbi.srWindow.Top};
+        SetConsoleCursorPosition(g_console, origin);
+    }
 }
 
 void UIClearToEnd(void) {
@@ -216,18 +217,14 @@ int UICountdown(const char *label, const char *hint, int seconds) {
     int remaining = seconds;
     int ch;
     int tick;
-    COORD numPos = {0, 0};
-    CONSOLE_SCREEN_BUFFER_INFO csbi;
 
+    putchar('\n');
     UISetColor(COLOR_HEAD);
-    printf("\n%s", label);
-    fflush(stdout);
-
-    if (GetConsoleScreenBufferInfo(g_console, &csbi)) {
-        numPos = csbi.dwCursorPosition;
-    }
-
-    printf("%2d s  (%s)", remaining, hint);
+    printf(" %s", label);
+    UISetColor(COLOR_WHITE);
+    printf("  %2d s", remaining);
+    UISetColor(COLOR_FRAME);
+    printf("  (%s)", hint);
     UISetColor(COLOR_DEFAULT);
     fflush(stdout);
 
@@ -251,9 +248,13 @@ int UICountdown(const char *label, const char *hint, int seconds) {
             break;
         }
 
-        SetConsoleCursorPosition(g_console, numPos);
+        printf("\r");
         UISetColor(COLOR_HEAD);
-        printf("%2d", remaining);
+        printf(" %s", label);
+        UISetColor(COLOR_WHITE);
+        printf("  %2d s", remaining);
+        UISetColor(COLOR_FRAME);
+        printf("  (%s)", hint);
         UISetColor(COLOR_DEFAULT);
         fflush(stdout);
     }
