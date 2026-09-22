@@ -245,28 +245,28 @@ void UIDrawTiming(ULONGLONG elapsedMs, const char *machine) {
     UIBoxRow(m, timing);
 }
 
+/* Redraw the timing row in place. UIDrawTiming remembers where it drew the
+   row, and SetConsoleCursorPosition works with or without VT output, so the
+   same code covers both console flavours. Anything else (escape sequences
+   that assume a fixed distance to the row) breaks as soon as the box is
+   taller than the window and the console scrolls. */
 static void UIUpdateTiming(void) {
-    DWORD mode = 0;
-    BOOL isVT = GetConsoleMode(g_console, &mode) && (mode & ENABLE_VIRTUAL_TERMINAL_PROCESSING);
+    CONSOLE_SCREEN_BUFFER_INFO csbi;
+    COORD saved;
 
-    if (isVT) {
-        fputs("\x1b[s\x1b[3A\r", stdout);
-        UIDrawTiming(g_lastElapsedMs, g_lastMachine);
-        fputs("\x1b[u", stdout);
-        fflush(stdout);
+    if (g_timingPos.Y < 0 || g_timingPos.X < 0) {
         return;
     }
 
-    if (g_timingPos.Y >= 0) {
-        CONSOLE_SCREEN_BUFFER_INFO csbi;
-        COORD savedPos = {0, 0};
-        if (GetConsoleScreenBufferInfo(g_console, &csbi)) {
-            savedPos = csbi.dwCursorPosition;
-        }
-        SetConsoleCursorPosition(g_console, g_timingPos);
-        UIDrawTiming(g_lastElapsedMs, g_lastMachine);
-        SetConsoleCursorPosition(g_console, savedPos);
+    if (!GetConsoleScreenBufferInfo(g_console, &csbi)) {
+        return;
     }
+
+    saved = csbi.dwCursorPosition;
+    SetConsoleCursorPosition(g_console, g_timingPos);
+    UIDrawTiming(g_lastElapsedMs, g_lastMachine);
+    fflush(stdout);
+    SetConsoleCursorPosition(g_console, saved);
 }
 
 static void DrawCountdownLine(const char *label, const char *hint, int remaining) {
@@ -402,6 +402,12 @@ static void UIBoxWrap(WORD color, const char *text) {
 
         if (text[len] && lastSpace && lastSpace > text) {
             len = (int)(lastSpace - text);
+        } else if (text[len]) {
+            /* one word wider than the row: break it so the box keeps its
+               width, but never inside a UTF-8 sequence */
+            while (len > 1 && ((unsigned char)text[len] & 0xC0) == 0x80) {
+                len--;
+            }
         }
 
         memcpy(buf, text, (size_t)len);
@@ -420,6 +426,10 @@ static void UIBoxWrap(WORD color, const char *text) {
 
 static void UISegCell(SEG *seg, BOOL attempted, BOOL ok, DWORD err) {
     char body[32];
+    char cell[sizeof(body) + CELL_W];
+    size_t bodyLen;
+    int cols;
+    int pad;
     WORD color;
 
     if (!attempted) {
@@ -428,6 +438,10 @@ static void UISegCell(SEG *seg, BOOL attempted, BOOL ok, DWORD err) {
     } else if (ok) {
         snprintf(body, sizeof(body), "OK");
         color = COLOR_OK_BG;
+    } else if (err == ERROR_NOT_VERIFIED) {
+        /* our own code: "not applied" reads better than 536870913 */
+        snprintf(body, sizeof(body), "✗nv");
+        color = COLOR_FAIL_BG;
     } else {
         snprintf(body, sizeof(body), "✗%lu", (unsigned long)err);
         if (UIUtf8Len(body) > CELL_W) {
@@ -436,7 +450,21 @@ static void UISegCell(SEG *seg, BOOL attempted, BOOL ok, DWORD err) {
         color = COLOR_FAIL_BG;
     }
 
-    UISegSet(seg, color, "%-*s", CELL_W, body);
+    /* %-*s pads by bytes, so a multi-byte glyph would leave the cell short
+       of CELL_W display columns and shift every following column; pad by
+       column count instead. */
+    cols = UIUtf8Len(body);
+    if (cols > CELL_W) {
+        cols = CELL_W;
+    }
+    pad = CELL_W - cols;
+    bodyLen = strlen(body);
+
+    memcpy(cell, body, bodyLen);
+    memset(cell + bodyLen, ' ', (size_t)pad);
+    cell[bodyLen + (size_t)pad] = 0;
+
+    UISegSet(seg, color, "%s", cell);
 }
 
 static void UIAddNote(char *buf, size_t size, size_t *pos, const char *fmt, ...) {
@@ -502,10 +530,14 @@ void UIReportProcess(int index, const TARGET *target, const PROCESS_RESULT *r) {
             }
 
             if (i == STEP_THR) {
-                UIAddNote(
-                    note, sizeof(note), &pos,
-                    "thr %d/%d (err %lu)",
-                    r->thrSet, r->thrTotal, (unsigned long)r->err[i]);
+                UIAddNote(note, sizeof(note), &pos, "thr %d/%d", r->thrSet, r->thrTotal);
+                if (r->err[i] == ERROR_NOT_VERIFIED) {
+                    UIAddNote(note, sizeof(note), &pos, "(nv)");
+                } else {
+                    UIAddNote(note, sizeof(note), &pos, "(err %lu)", (unsigned long)r->err[i]);
+                }
+            } else if (r->err[i] == ERROR_NOT_VERIFIED) {
+                UIAddNote(note, sizeof(note), &pos, "%s:nv", kStepShort[i]);
             } else {
                 UIAddNote(
                     note, sizeof(note), &pos,

@@ -31,6 +31,9 @@ BOOL ConfigAddTarget(const wchar_t *name) {
     if (g_config.targetNameCount >= MAX_TARGET_NAMES) {
         return FALSE;
     }
+    if (!name || !*name || wcslen(name) >= TARGET_NAME_MAX) {
+        return FALSE;
+    }
 
     g_config.targetNames[g_config.targetNameCount++] = name;
     return TRUE;
@@ -60,21 +63,42 @@ BOOL ConfigParseArgs(int argc, wchar_t **argv) {
         }
 
         if (wcsncmp(argv[i], L"--rate=", 7) == 0) {
-            int v = _wtoi(argv[i] + 7);
+            const wchar_t *text = argv[i] + 7;
+            wchar_t *end = NULL;
+            long v;
 
-            if (v <= 0) {
-                g_config.cpuCapPercent = 0;
-            } else if (v > 100) {
-                g_config.cpuCapPercent = 100;
-            } else {
-                g_config.cpuCapPercent = (DWORD)v;
+            errno = 0;
+            v = wcstol(text, &end, 10);
+
+            /* Reject anything that is not a plain non-negative number: a
+               typo must not silently turn the hard cap off. */
+            if (end == text || *end != 0 || v < 0) {
+                fwprintf(stderr, L"invalid --rate value: \"%ls\" (expected 0-100)\n", text);
+                fflush(stderr);
+                return FALSE;
             }
+
+            if (errno == ERANGE || v > 100) {
+                fwprintf(stderr, L"warning: --rate=%ld clamped to 100\n", v);
+                fflush(stderr);
+                v = 100;
+            }
+
+            g_config.cpuCapPercent = (DWORD)v;
             continue;
         }
 
         if (argv[i][0] == L'-') {
             fwprintf(stderr, L"unknown option: %ls\n", argv[i]);
             fwprintf(stderr, L"usage: fuckAce [--rate=PERCENT] [--no-cap] [process.exe ...]\n");
+            fflush(stderr);
+            return FALSE;
+        }
+
+        if (!argv[i][0] || wcslen(argv[i]) >= TARGET_NAME_MAX) {
+            fwprintf(
+                stderr, L"target name must be 1-%d characters: %ls\n",
+                TARGET_NAME_MAX - 1, argv[i]);
             fflush(stderr);
             return FALSE;
         }

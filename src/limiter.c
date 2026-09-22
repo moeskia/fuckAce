@@ -6,6 +6,7 @@
 /* ------------------------------------------------------------------ */
 
 typedef LONG (NTAPI *PFN_NtSetInformationProcess)(HANDLE, ULONG, PVOID, ULONG);
+typedef LONG (NTAPI *PFN_NtQueryInformationProcess)(HANDLE, ULONG, PVOID, ULONG, PULONG);
 
 static PFN_NtSetInformationProcess LoadNtSetInformationProcess(void) {
     static PFN_NtSetInformationProcess fn = NULL;
@@ -19,6 +20,24 @@ static PFN_NtSetInformationProcess LoadNtSetInformationProcess(void) {
         if (ntdll) {
             fn = (PFN_NtSetInformationProcess)(void *)GetProcAddress(
                 ntdll, "NtSetInformationProcess");
+        }
+    }
+
+    return fn;
+}
+
+static PFN_NtQueryInformationProcess LoadNtQueryInformationProcess(void) {
+    static PFN_NtQueryInformationProcess fn = NULL;
+    static BOOL tried = FALSE;
+    HMODULE ntdll;
+
+    if (!tried) {
+        tried = TRUE;
+        ntdll = GetModuleHandleW(L"ntdll.dll");
+
+        if (ntdll) {
+            fn = (PFN_NtQueryInformationProcess)(void *)GetProcAddress(
+                ntdll, "NtQueryInformationProcess");
         }
     }
 
@@ -86,12 +105,32 @@ BOOL LimiterEnableDebugPrivilege(DWORD *outError) {
     return ok && *outError == ERROR_SUCCESS;
 }
 
+/* Logical CPUs of the whole machine. A job's CpuRate is a share of the
+   machine, so the rate conversion needs this count, not the group count. */
 DWORD LimiterGetLogicalCpuCount(void) {
-    SYSTEM_INFO si;
+    DWORD count = GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
 
-    GetSystemInfo(&si);
+    if (count == 0) {
+        SYSTEM_INFO si;
+        GetSystemInfo(&si);
+        count = si.dwNumberOfProcessors;
+    }
 
-    return si.dwNumberOfProcessors > 0 ? si.dwNumberOfProcessors : 1;
+    return count > 0 ? count : 1;
+}
+
+/* Logical CPUs of processor group 0: the group every affinity mask we can
+   build with SetProcessAffinityMask applies to. */
+DWORD LimiterGetGroupCpuCount(void) {
+    DWORD count = GetActiveProcessorCount(0);
+
+    if (count == 0) {
+        SYSTEM_INFO si;
+        GetSystemInfo(&si);
+        count = si.dwNumberOfProcessors;
+    }
+
+    return count > 0 ? count : 1;
 }
 
 DWORD_PTR LimiterGetLastCpuAffinityMask(DWORD cpuCount) {
@@ -142,8 +181,8 @@ int LimiterScanTargets(TARGET *targets, int cap, DWORD *outError, BOOL *outTrunc
         }
         if (n < cap) {
             targets[n].pid = pe.th32ProcessID;
-            wcsncpy(targets[n].name, pe.szExeFile, 31);
-            targets[n].name[31] = 0;
+            wcsncpy(targets[n].name, pe.szExeFile, TARGET_NAME_MAX - 1);
+            targets[n].name[TARGET_NAME_MAX - 1] = 0;
             n++;
         } else {
             *outTruncated = TRUE;
@@ -177,12 +216,17 @@ static BOOL EnableEfficiencyMode(HANDLE hProcess, DWORD *outError) {
         return FALSE;
     }
 
-    if (GetProcessInformation(
+    /* A read-back that fails is not a pass: we could not confirm anything. */
+    if (!GetProcessInformation(
             hProcess,
             PIC_POWER_THROTTLING,
             &check,
-            sizeof(check)) &&
-        !(check.StateMask & PROCESS_POWER_THROTTLING_EXECUTION_SPEED)) {
+            sizeof(check))) {
+        *outError = ERROR_NOT_VERIFIED;
+        return FALSE;
+    }
+
+    if (!(check.StateMask & PROCESS_POWER_THROTTLING_EXECUTION_SPEED)) {
         *outError = ERROR_NOT_VERIFIED;
         return FALSE;
     }
@@ -190,24 +234,44 @@ static BOOL EnableEfficiencyMode(HANDLE hProcess, DWORD *outError) {
     return TRUE;
 }
 
-/* I/O priority has no Win32 API; it is set through NtSetInformationProcess
-   with ProcessIoPriority (PROCESSINFOCLASS 0x21). */
+/* I/O priority has no Win32 API; it is set and read back through
+   NtSetInformationProcess / NtQueryInformationProcess with
+   ProcessIoPriority (PROCESSINFOCLASS 0x21). */
 static BOOL SetVeryLowIoPriority(HANDLE hProcess, DWORD *outError) {
-    PFN_NtSetInformationProcess fn = LoadNtSetInformationProcess();
+    PFN_NtSetInformationProcess setFn = LoadNtSetInformationProcess();
+    PFN_NtQueryInformationProcess queryFn = LoadNtQueryInformationProcess();
     ULONG hint = IO_PRIORITY_VERY_LOW;
+    ULONG check = 0;
     LONG status;
 
     *outError = ERROR_SUCCESS;
 
-    if (!fn) {
+    if (!setFn) {
         *outError = ERROR_NOT_SUPPORTED;
         return FALSE;
     }
 
-    status = fn(hProcess, NT_PROCESS_IO_PRIORITY, &hint, sizeof(hint));
+    status = setFn(hProcess, NT_PROCESS_IO_PRIORITY, &hint, sizeof(hint));
 
     if (!NT_SUCCESS(status)) {
         *outError = (DWORD)status;
+        return FALSE;
+    }
+
+    if (!queryFn) {
+        *outError = ERROR_NOT_SUPPORTED;
+        return FALSE;
+    }
+
+    status = queryFn(hProcess, NT_PROCESS_IO_PRIORITY, &check, sizeof(check), NULL);
+
+    if (!NT_SUCCESS(status)) {
+        *outError = ERROR_NOT_VERIFIED;
+        return FALSE;
+    }
+
+    if (check != IO_PRIORITY_VERY_LOW) {
+        *outError = ERROR_NOT_VERIFIED;
         return FALSE;
     }
 
@@ -230,12 +294,16 @@ static BOOL SetVeryLowMemoryPriority(HANDLE hProcess, DWORD *outError) {
         return FALSE;
     }
 
-    if (GetProcessInformation(
+    if (!GetProcessInformation(
             hProcess,
             PIC_MEMORY_PRIORITY,
             &check,
-            sizeof(check)) &&
-        check.MemoryPriority != MEMORY_PRIORITY_VERY_LOW) {
+            sizeof(check))) {
+        *outError = ERROR_NOT_VERIFIED;
+        return FALSE;
+    }
+
+    if (check.MemoryPriority != MEMORY_PRIORITY_VERY_LOW) {
         *outError = ERROR_NOT_VERIFIED;
         return FALSE;
     }
@@ -308,13 +376,20 @@ static BOOL ApplyCpuCap(HANDLE hProcess, DWORD percent, DWORD *outError) {
         return FALSE;
     }
 
-    if (QueryInformationJobObject(
+    if (!QueryInformationJobObject(
             job,
             JobObjectCpuRateControlInformation,
             &check,
             sizeof(check),
-            &returned) &&
-        !(check.ControlFlags & JOB_OBJECT_CPU_RATE_CONTROL_ENABLE)) {
+            &returned)) {
+        *outError = ERROR_NOT_VERIFIED;
+        CloseHandle(job);
+        return FALSE;
+    }
+
+    if (returned < sizeof(check) ||
+        !(check.ControlFlags & JOB_OBJECT_CPU_RATE_CONTROL_ENABLE) ||
+        !(check.ControlFlags & JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP)) {
         *outError = ERROR_NOT_VERIFIED;
         CloseHandle(job);
         return FALSE;
@@ -327,7 +402,8 @@ static BOOL ApplyCpuCap(HANDLE hProcess, DWORD percent, DWORD *outError) {
 }
 
 /* SetPriorityClass only shifts the base priority of threads that are at
-   their normal value, so pin every thread explicitly. */
+   their normal value, so pin every thread explicitly and read each one
+   back. Threads that exit mid-walk are skipped, not counted as failures. */
 static BOOL IdleThreads(DWORD pid, int *setCount, int *totalCount, DWORD *outError) {
     HANDLE snapshot;
     THREADENTRY32 te;
@@ -370,7 +446,6 @@ static BOOL IdleThreads(DWORD pid, int *setCount, int *totalCount, DWORD *outErr
             continue;
         }
 
-        total++;
         hThread = OpenThread(THREAD_SET_INFORMATION, FALSE, te.th32ThreadID);
 
         if (!hThread) {
@@ -378,6 +453,7 @@ static BOOL IdleThreads(DWORD pid, int *setCount, int *totalCount, DWORD *outErr
             if (err == ERROR_INVALID_PARAMETER) {
                 continue;   /* thread exited between snapshot and open */
             }
+            total++;
             failed++;
             if (firstErr == ERROR_SUCCESS) {
                 firstErr = err;
@@ -385,13 +461,20 @@ static BOOL IdleThreads(DWORD pid, int *setCount, int *totalCount, DWORD *outErr
             continue;
         }
 
-        if (SetThreadPriority(hThread, THREAD_PRIORITY_IDLE)) {
-            done++;
-        } else {
+        total++;
+
+        if (!SetThreadPriority(hThread, THREAD_PRIORITY_IDLE)) {
             failed++;
             if (firstErr == ERROR_SUCCESS) {
                 firstErr = GetLastError();
             }
+        } else if (GetThreadPriority(hThread) != THREAD_PRIORITY_IDLE) {
+            failed++;
+            if (firstErr == ERROR_SUCCESS) {
+                firstErr = ERROR_NOT_VERIFIED;
+            }
+        } else {
+            done++;
         }
 
         CloseHandle(hThread);
@@ -433,10 +516,6 @@ static HANDLE OpenTargetProcess(DWORD pid, DWORD *outRights, DWORD *outError) {
     if (hProcess) {
         *outRights = kBasicRights;
         return hProcess;
-    }
-
-    if (firstErr == ERROR_SUCCESS) {
-        firstErr = GetLastError();
     }
 
     hProcess = OpenProcess(PROCESS_SET_INFORMATION, FALSE, pid);

@@ -1,0 +1,3 @@
+# The repository stores LF; keep the working tree identical on every platform
+# so git stops warning about CRLF conversion on Windows checkouts.
+* text=auto eol=lf

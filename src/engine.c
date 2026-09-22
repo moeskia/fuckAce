@@ -26,6 +26,7 @@ int EngineRunOnce(BOOL isFirst) {
     DWORD dbgErr = ERROR_SUCCESS;
     BOOL dbgOk;
     DWORD cpuCount;
+    DWORD groupCpus;
     DWORD_PTR affinityMask;
     DWORD groups;
     int i;
@@ -51,11 +52,15 @@ int EngineRunOnce(BOOL isFirst) {
     if (isFirst) {
         UIClearScreen();
     }
+    /* One row per target plus a possible note, so budget three lines each;
+       the layout only clamps this against the largest window the console
+       will give us. */
     UILayoutConsole(17 + 3 * (targetCount > 0 ? targetCount : 0));
     UIResetCursor();
 
     cpuCount = LimiterGetLogicalCpuCount();
-    affinityMask = LimiterGetLastCpuAffinityMask(cpuCount);
+    groupCpus = LimiterGetGroupCpuCount();
+    affinityMask = LimiterGetLastCpuAffinityMask(groupCpus);
     groups = GetActiveProcessorGroupCount();
 
     UIBoxRule("┌", "┐");
@@ -76,7 +81,7 @@ int EngineRunOnce(BOOL isFirst) {
         UISegSet(&status[n++], COLOR_HEAD, " · ");
         UISegSet(&status[n++], COLOR_WHITE, "%lu CPUs", (unsigned long)cpuCount);
         UISegSet(&status[n++], COLOR_HEAD, " → CPU ");
-        UISegSet(&status[n++], COLOR_WHITE, "%lu", (unsigned long)(cpuCount - 1));
+        UISegSet(&status[n++], COLOR_WHITE, "%lu", (unsigned long)(groupCpus - 1));
         UISegSet(&status[n++], COLOR_HEAD, " · cap ");
         if (g_config.cpuCapPercent > 0) {
             UISegSet(&status[n++], COLOR_WARN, "%lu%%/CPU", (unsigned long)g_config.cpuCapPercent);
@@ -90,6 +95,7 @@ int EngineRunOnce(BOOL isFirst) {
         UIBoxRule("├", "┤");
         UIBoxLine(COLOR_FAIL_BG, " ✗ process scan failed (Error=%lu)", (unsigned long)scanErr);
         UIBoxRule("└", "┘");
+        UIClearToEnd();
         return 1;
     }
 
@@ -177,7 +183,7 @@ int EngineRunOnce(BOOL isFirst) {
         UIBoxRule("├", "┤");
 
         {
-            SEG sum[8];
+            SEG sum[12];
             int k = 0;
 
             UISegSet(&sum[k++], COLOR_HEAD, " found ");
@@ -272,7 +278,7 @@ int EngineRunOnce(BOOL isFirst) {
 
             if (foundCount > 0) {
                 SEG tgt[16];
-                wchar_t uniq[8][32];
+                wchar_t uniq[8][TARGET_NAME_MAX];
                 int counts[8];
                 int u = 0;
                 int t = 0;
@@ -293,8 +299,8 @@ int EngineRunOnce(BOOL isFirst) {
                             continue;
                         }
                         hit = u;
-                        wcsncpy(uniq[u], targets[i].name, 31);
-                        uniq[u][31] = 0;
+                        wcsncpy(uniq[u], targets[i].name, TARGET_NAME_MAX - 1);
+                        uniq[u][TARGET_NAME_MAX - 1] = 0;
                         counts[u] = 0;
                         u++;
                     }

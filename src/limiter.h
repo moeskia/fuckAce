@@ -6,6 +6,7 @@
 BOOL LimiterIsRunAsAdmin(void);
 BOOL LimiterEnableDebugPrivilege(DWORD *outError);
 DWORD LimiterGetLogicalCpuCount(void);
+DWORD LimiterGetGroupCpuCount(void);
 DWORD_PTR LimiterGetLastCpuAffinityMask(DWORD cpuCount);
 int LimiterScanTargets(TARGET *targets, int cap, DWORD *outError, BOOL *outTruncated);
 PROCESS_RESULT LimiterApplySettings(

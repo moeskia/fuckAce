@@ -10,6 +10,7 @@
 #include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 #include <conio.h>
 
 /* ------------------------------------------------------------------ */
@@ -63,6 +64,9 @@ typedef struct _ACE_CPU_RATE {
 #define EXIT_SECONDS 10
 #define DEFAULT_CPU_CAP 3
 
+/* buffer size for a target image name, terminator included */
+#define TARGET_NAME_MAX 32
+
 enum {
     STEP_PRI = 0,
     STEP_AFF,
@@ -78,7 +82,7 @@ extern const char *const kStepShort[STEP_COUNT];
 
 typedef struct _TARGET {
     DWORD pid;
-    wchar_t name[32];
+    wchar_t name[TARGET_NAME_MAX];
 } TARGET;
 
 typedef struct _PROCESS_RESULT {
