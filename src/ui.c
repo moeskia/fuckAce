@@ -348,8 +348,22 @@ void UIBoxRow(int count, const SEG *segs) {
     UISetColor(COLOR_FRAME);
     fputs("│ ", stdout);
     for (i = 0; i < count; i++) {
+        const char *text = segs[i].text;
+
+        /* A run's background has to start at its first glyph: the space in
+           front of it belongs to the surrounding gap, not to the run.
+           Painting it with the run colour widened the coloured block by one
+           column the text never uses, while the text itself stayed put. */
+        if (*text == ' ') {
+            UISetColor(COLOR_FRAME);
+            do {
+                putchar(' ');
+                text++;
+            } while (*text == ' ');
+        }
+
         UISetColor(segs[i].color);
-        fputs(segs[i].text, stdout);
+        fputs(text, stdout);
         used += UIUtf8Len(segs[i].text);
     }
     UISetColor(COLOR_FRAME);

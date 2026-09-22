@@ -73,9 +73,9 @@ int EngineRunOnce(BOOL isFirst) {
         UISegSet(&status[n++], COLOR_OK_BG, " ✓ admin");
         UISegSet(&status[n++], COLOR_HEAD, " · ");
         if (dbgOk) {
-            UISegSet(&status[n++], COLOR_OK_BG, "✓ SeDebugPrivilege");
+            UISegSet(&status[n++], COLOR_OK_BG, " ✓ SeDebugPrivilege");
         } else {
-            UISegSet(&status[n++], COLOR_WARN_BG, "! SeDebugPrivilege(%lu)",
+            UISegSet(&status[n++], COLOR_WARN_BG, " ! SeDebugPrivilege(%lu)",
                      (unsigned long)dbgErr);
         }
         UISegSet(&status[n++], COLOR_HEAD, " · ");
@@ -227,22 +227,22 @@ int EngineRunOnce(BOOL isFirst) {
             }
 
             if (deniedCount == 0 && unsupportedCount == 0 && otherErrCount == 0) {
-                UIBoxLine(COLOR_OK, " diagnostics no errors — every attempted operation stuck");
+                UIBoxLine(COLOR_OK, " diagnostics  no errors — every attempted operation stuck");
             } else {
                 SEG diag[8];
                 int d = 0;
 
                 UISegSet(&diag[d++], COLOR_HEAD, " diagnostics ");
                 if (deniedCount > 0) {
-                    UISegSet(&diag[d++], COLOR_FAIL, "access-denied %d", deniedCount);
+                    UISegSet(&diag[d++], COLOR_FAIL, " access-denied %d", deniedCount);
                 }
                 if (unsupportedCount > 0) {
                     UISegSet(&diag[d++], COLOR_WARN, "%sunsupported %d",
-                             deniedCount > 0 ? " · " : "", unsupportedCount);
+                             deniedCount > 0 ? " · " : " ", unsupportedCount);
                 }
                 if (otherErrCount > 0) {
                     UISegSet(&diag[d++], COLOR_WARN, "%sother %d",
-                             (deniedCount > 0 || unsupportedCount > 0) ? " · " : "",
+                             (deniedCount > 0 || unsupportedCount > 0) ? " · " : " ",
                              otherErrCount);
                 }
                 UIBoxRow(d, diag);
