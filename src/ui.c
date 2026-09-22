@@ -153,10 +153,13 @@ void UILayoutConsole(int contentRows) {
     max = GetLargestConsoleWindowSize(g_console);
 
     wantW = CONTENT_WIDTH;
-    wantH = contentRows + 4;
 
-    if (wantH < 24) {
-        wantH = 24;
+    /* Three quarters of the old budget: (contentRows + 4) rows left the
+       window with a lot of empty space under the box. */
+    wantH = (contentRows + 4) * 3 / 4;
+
+    if (wantH < 18) {           /* 24 * 3 / 4 */
+        wantH = 18;
     }
     if (max.X <= 0 || max.Y <= 0) {
         g_width = CONTENT_WIDTH;
@@ -213,7 +216,7 @@ void UILayoutConsole(int contentRows) {
     }
 }
 
-static COORD g_timingPos = {-1, -1};
+static BOOL g_timingDrawn = FALSE;
 static ULONGLONG g_lastElapsedMs = 0;
 static char g_lastMachine[MAX_COMPUTERNAME_LENGTH + 2] = {0};
 
@@ -221,7 +224,6 @@ void UIDrawTiming(ULONGLONG elapsedMs, const char *machine) {
     SYSTEMTIME st;
     SEG timing[8];
     int m = 0;
-    CONSOLE_SCREEN_BUFFER_INFO csbi;
 
     g_lastElapsedMs = elapsedMs;
     if (machine) {
@@ -229,9 +231,7 @@ void UIDrawTiming(ULONGLONG elapsedMs, const char *machine) {
         g_lastMachine[sizeof(g_lastMachine) - 1] = 0;
     }
 
-    if (GetConsoleScreenBufferInfo(g_console, &csbi)) {
-        g_timingPos = csbi.dwCursorPosition;
-    }
+    g_timingDrawn = TRUE;
 
     GetLocalTime(&st);
 
@@ -245,16 +245,19 @@ void UIDrawTiming(ULONGLONG elapsedMs, const char *machine) {
     UIBoxRow(m, timing);
 }
 
-/* Redraw the timing row in place. UIDrawTiming remembers where it drew the
-   row, and SetConsoleCursorPosition works with or without VT output, so the
-   same code covers both console flavours. Anything else (escape sequences
-   that assume a fixed distance to the row) breaks as soon as the box is
-   taller than the window and the console scrolls. */
+/* Redraw the timing row in place. UICountdown always draws its line a fixed
+   distance below that row (timing, bottom rule, blank line, countdown), so
+   the redraw moves relative to the cursor: an absolute buffer coordinate
+   goes stale the moment the box is taller than the window and the console
+   scrolls it up, while a relative move survives that. */
+#define TIMING_ROWS_ABOVE_COUNTDOWN 3
+
 static void UIUpdateTiming(void) {
     CONSOLE_SCREEN_BUFFER_INFO csbi;
     COORD saved;
+    COORD target;
 
-    if (g_timingPos.Y < 0 || g_timingPos.X < 0) {
+    if (!g_timingDrawn) {
         return;
     }
 
@@ -263,7 +266,14 @@ static void UIUpdateTiming(void) {
     }
 
     saved = csbi.dwCursorPosition;
-    SetConsoleCursorPosition(g_console, g_timingPos);
+
+    target.Y = (SHORT)(saved.Y - TIMING_ROWS_ABOVE_COUNTDOWN);
+    if (target.Y < 0) {
+        target.Y = 0;
+    }
+    target.X = 0;
+
+    SetConsoleCursorPosition(g_console, target);
     UIDrawTiming(g_lastElapsedMs, g_lastMachine);
     fflush(stdout);
     SetConsoleCursorPosition(g_console, saved);
