@@ -58,11 +58,11 @@ void UIClearToEnd(void) {
     }
 }
 
-void UISetColor(WORD color) {
+static void UISetColor(WORD color) {
     SetConsoleTextAttribute(g_console, color);
 }
 
-int UIUtf8Len(const char *s) {
+static int UIUtf8Len(const char *s) {
     int n = 0;
 
     for (; *s; s++) {
@@ -74,7 +74,7 @@ int UIUtf8Len(const char *s) {
     return n;
 }
 
-const char *UIShortReason(DWORD err) {
+static const char *UIShortReason(DWORD err) {
     switch (err) {
     case ERROR_SUCCESS:
         return "ok";
@@ -245,7 +245,7 @@ void UIDrawTiming(ULONGLONG elapsedMs, const char *machine) {
     UIBoxRow(m, timing);
 }
 
-void UIUpdateTiming(void) {
+static void UIUpdateTiming(void) {
     DWORD mode = 0;
     BOOL isVT = GetConsoleMode(g_console, &mode) && (mode & ENABLE_VIRTUAL_TERMINAL_PROCESSING);
 
@@ -269,12 +269,7 @@ void UIUpdateTiming(void) {
     }
 }
 
-int UICountdown(const char *label, const char *hint, int seconds) {
-    int remaining = seconds;
-    int ch;
-    int tick;
-
-    putchar('\n');
+static void DrawCountdownLine(const char *label, const char *hint, int remaining) {
     UISetColor(COLOR_HEAD);
     printf(" %s ", label);
     UISetColor(COLOR_WHITE);
@@ -283,6 +278,15 @@ int UICountdown(const char *label, const char *hint, int seconds) {
     printf("  (%s)", hint);
     UISetColor(COLOR_DEFAULT);
     fflush(stdout);
+}
+
+int UICountdown(const char *label, const char *hint, int seconds) {
+    int remaining = seconds;
+    int ch;
+    int tick;
+
+    putchar('\n');
+    DrawCountdownLine(label, hint, remaining);
 
     for (;;) {
         for (tick = 0; tick < 20; tick++) {
@@ -307,14 +311,7 @@ int UICountdown(const char *label, const char *hint, int seconds) {
         UIUpdateTiming();
 
         printf("\r");
-        UISetColor(COLOR_HEAD);
-        printf(" %s ", label);
-        UISetColor(COLOR_WHITE);
-        printf("%d s", remaining);
-        UISetColor(COLOR_FRAME);
-        printf("  (%s)", hint);
-        UISetColor(COLOR_DEFAULT);
-        fflush(stdout);
+        DrawCountdownLine(label, hint, remaining);
     }
 
     return 1;
@@ -379,7 +376,7 @@ void UIBoxLine(WORD color, const char *fmt, ...) {
     UIBoxRow(1, &seg);
 }
 
-void UIBoxWrap(WORD color, const char *text) {
+static void UIBoxWrap(WORD color, const char *text) {
     const int indent = 7;
 
     while (*text) {
@@ -421,37 +418,7 @@ void UIBoxWrap(WORD color, const char *text) {
     }
 }
 
-void UIBoxBar(WORD color, const char *fmt, ...) {
-    char text[200];
-    va_list args;
-    int used;
-    int pad;
-    int i;
-
-    va_start(args, fmt);
-    vsnprintf(text, sizeof(text), fmt, args);
-    va_end(args);
-
-    used = UIUtf8Len(text);
-
-    UISetColor(COLOR_FRAME);
-    fputs("│ ", stdout);
-    UISetColor(color);
-    fputs(text, stdout);
-    if (used > g_width - 4) {
-        used = g_width - 4;
-    }
-    pad = g_width - 4 - used;
-    for (i = 0; i < pad; i++) {
-        putchar(' ');
-    }
-    UISetColor(COLOR_FRAME);
-    fputs(" │", stdout);
-    putchar('\n');
-    UISetColor(COLOR_DEFAULT);
-}
-
-void UISegCell(SEG *seg, BOOL attempted, BOOL ok, DWORD err) {
+static void UISegCell(SEG *seg, BOOL attempted, BOOL ok, DWORD err) {
     char body[32];
     WORD color;
 
@@ -472,7 +439,7 @@ void UISegCell(SEG *seg, BOOL attempted, BOOL ok, DWORD err) {
     UISegSet(seg, color, "%-*s", CELL_W, body);
 }
 
-void UIAddNote(char *buf, size_t size, size_t *pos, const char *fmt, ...) {
+static void UIAddNote(char *buf, size_t size, size_t *pos, const char *fmt, ...) {
     va_list args;
     int written;
 

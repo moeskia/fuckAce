@@ -38,7 +38,7 @@ int EngineRunOnce(BOOL isFirst) {
         UILayoutConsole(4);
         UIResetCursor();
         UIBoxRule("┌", "┐");
-        UIBoxBar(COLOR_FAIL_BG, " ✗ administrator privileges required");
+        UIBoxLine(COLOR_FAIL_BG, " ✗ administrator privileges required");
         UIBoxRule("└", "┘");
         UIClearToEnd();
         return 1;
@@ -59,7 +59,7 @@ int EngineRunOnce(BOOL isFirst) {
     groups = GetActiveProcessorGroupCount();
 
     UIBoxRule("┌", "┐");
-    UIBoxBar(COLOR_TITLE, " fuckAce · SGuard64 / SGuardSvc64 limiter");
+    UIBoxLine(COLOR_TITLE, " fuckAce · SGuard64 / SGuardSvc64 limiter");
 
     {
         SEG status[14];
@@ -88,17 +88,17 @@ int EngineRunOnce(BOOL isFirst) {
 
     if (targetCount < 0) {
         UIBoxRule("├", "┤");
-        UIBoxBar(COLOR_FAIL_BG, " ✗ process scan failed (Error=%lu)", (unsigned long)scanErr);
+        UIBoxLine(COLOR_FAIL_BG, " ✗ process scan failed (Error=%lu)", (unsigned long)scanErr);
         UIBoxRule("└", "┘");
         return 1;
     }
 
     if (groups > 1) {
-        UIBoxBar(COLOR_WARN, " ! %lu processor groups — affinity targets group 0",
+        UIBoxLine(COLOR_WARN, " ! %lu processor groups — affinity targets group 0",
                  (unsigned long)groups);
     }
     if (truncated) {
-        UIBoxBar(COLOR_WARN, " ! more than %d targets found — extra processes skipped",
+        UIBoxLine(COLOR_WARN, " ! more than %d targets found — extra processes skipped",
                  MAX_TARGETS);
     }
 
@@ -165,7 +165,7 @@ int EngineRunOnce(BOOL isFirst) {
                 existingJobCount++;
             }
 
-            if (r.opened && r.attemptCount > 0 && r.okCount == r.attemptCount) {
+            if (r.opened && r.okCount == r.attemptCount) {
                 fullCount++;
             } else if (r.opened && r.okCount > 0) {
                 partialCount++;
@@ -244,19 +244,19 @@ int EngineRunOnce(BOOL isFirst) {
         }
 
         if (foundCount == 0) {
-            UIBoxBar(COLOR_FAIL_BG, " ✗ FAILED - no target process found");
+            UIBoxLine(COLOR_FAIL_BG, " ✗ FAILED - no target process found");
             exitCode = 1;
         } else if (fullCount == foundCount) {
-            UIBoxBar(COLOR_OK_BG, " ✓ SUCCESS - all %d processes fully configured", foundCount);
+            UIBoxLine(COLOR_OK_BG, " ✓ SUCCESS - all %d processes fully configured", foundCount);
             exitCode = 0;
         } else if (fullCount > 0 || partialCount > 0) {
-            UIBoxBar(COLOR_WARN_BG, " ! PARTIAL - %d of %d processes fully configured",
+            UIBoxLine(COLOR_WARN_BG, " ! PARTIAL - %d of %d processes fully configured",
                      fullCount, foundCount);
             exitCode = 2;
         } else {
-            UIBoxBar(COLOR_FAIL_BG, " ✗ FAILED - found %d processes but no setting applied",
+            UIBoxLine(COLOR_FAIL_BG, " ✗ FAILED - found %d processes but no setting applied",
                      foundCount);
-            UIBoxBar(COLOR_FAIL_BG, "   access denied, protected process, or unsupported operation");
+            UIBoxLine(COLOR_FAIL_BG, "   access denied, protected process, or unsupported operation");
             exitCode = 3;
         }
 

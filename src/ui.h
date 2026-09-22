@@ -33,20 +33,12 @@ void UIClearScreen(void);
 void UIResetCursor(void);
 void UIClearToEnd(void);
 void UILayoutConsole(int contentRows);
-void UISetColor(WORD color);
-int UIUtf8Len(const char *s);
 SEG *UISegSet(SEG *seg, WORD color, const char *fmt, ...);
 void UIBoxRule(const char *left, const char *right);
 void UIBoxRow(int count, const SEG *segs);
 void UIBoxLine(WORD color, const char *fmt, ...);
-void UIBoxWrap(WORD color, const char *text);
-void UIBoxBar(WORD color, const char *fmt, ...);
-void UISegCell(SEG *seg, BOOL attempted, BOOL ok, DWORD err);
-const char *UIShortReason(DWORD err);
-void UIAddNote(char *buf, size_t size, size_t *pos, const char *fmt, ...);
 void UIReportProcess(int index, const TARGET *target, const PROCESS_RESULT *r);
 void UIDrawTiming(ULONGLONG elapsedMs, const char *machine);
-void UIUpdateTiming(void);
 int UICountdown(const char *label, const char *hint, int seconds);
 
 #endif /* UI_H */
