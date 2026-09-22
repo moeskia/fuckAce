@@ -9,7 +9,7 @@
 | PRIO | 优先级 | 降为 `IDLE_PRIORITY_CLASS` |
 | AFF | 亲和性 | 绑定到最后一个逻辑 CPU |
 | ECO | EcoQoS | `ProcessPowerThrottling`（`EXECUTION_SPEED`） |
-| CAP | CPU 硬上限 | Job Object `CPU_RATE_CONTROL` + `HARD_CAP`（默认 10%/CPU） |
+| CAP | CPU 硬上限 | Job Object `CPU_RATE_CONTROL` + `HARD_CAP`（默认 3%/CPU） |
 | IO | I/O 优先级 | `IoPriorityVeryLow` |
 | MEM | 内存优先级 | `MEMORY_PRIORITY_VERY_LOW` |
 | THR | 线程优先级 | 每个线程 `THREAD_PRIORITY_IDLE` |
@@ -34,7 +34,7 @@ fuckAce.exe [--rate=PERCENT] [--no-cap] [process.exe ...]
 
 | 参数 | 说明 |
 | --- | --- |
-| `--rate=N` | CPU 硬上限，单位是**单个逻辑 CPU 的百分比**，默认 `10` |
+| `--rate=N` | CPU 硬上限，单位是**单个逻辑 CPU 的百分比**，默认 `3` |
 | `--no-cap` | 关闭 CPU 硬上限（`--rate=0` 等价） |
 | `process.exe` | 追加目标进程名，默认已包含 `SGuard64.exe` 与 `SGuardSvc64.exe` |
 
@@ -56,7 +56,7 @@ fuckAce.exe [--rate=PERCENT] [--no-cap] [process.exe ...]
 
 - 必须在管理员权限下运行，并启用 `SeDebugPrivilege`。
 - **CPU 硬上限用 Job Object 实现，程序退出后依然生效**（只要目标进程还活着）。进程无法离开一个不是自己创建的 Job，所以这一项无法被 ACE 自行解除；这也是唯一"解不掉"的限流手段。
-- Job 的 `CpuRate` 是**整机**比例，不是单核比例。程序按 `--rate / 逻辑 CPU 数` 换算：在 16 核机器上 `--rate=10` 约为 0.1 个核心。若游戏出现卡顿或 ACE 异常，调大 `--rate` 或使用 `--no-cap`。
+- Job 的 `CpuRate` 是**整机**比例，不是单核比例。程序按 `--rate / 逻辑 CPU 数` 换算：在 16 核机器上 `--rate=3` 约为 0.03 个核心。若游戏出现卡顿或 ACE 异常，调大 `--rate` 或使用 `--no-cap`。
 - `PRIO` / `AFF` / `ECO` / `IO` / `MEM` 是进程级设置；`THR` 只作用于执行瞬间已存在的线程，之后新建的线程由进程优先级兜底。
 - 若目标进程已被放入其他 Job 且拒绝嵌套，或打开时拿不到 `PROCESS_SET_QUOTA` 权限，则跳过 `CAP` 一项并在汇总处提示，其余设置照常进行。
 - ACE 会自我防护，若进程以保护模式运行，部分或全部操作可能返回 `access denied`，此时程序按退出码 `2` / `3` 提示。

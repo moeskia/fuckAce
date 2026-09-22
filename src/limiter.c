@@ -1,0 +1,568 @@
+#include "limiter.h"
+#include "config.h"
+
+/* ------------------------------------------------------------------ */
+/* Dynamic NTDLL function resolution                                  */
+/* ------------------------------------------------------------------ */
+
+typedef LONG (NTAPI *PFN_NtSetInformationProcess)(HANDLE, ULONG, PVOID, ULONG);
+
+static PFN_NtSetInformationProcess LoadNtSetInformationProcess(void) {
+    static PFN_NtSetInformationProcess fn = NULL;
+    static BOOL tried = FALSE;
+    HMODULE ntdll;
+
+    if (!tried) {
+        tried = TRUE;
+        ntdll = GetModuleHandleW(L"ntdll.dll");
+
+        if (ntdll) {
+            fn = (PFN_NtSetInformationProcess)(void *)GetProcAddress(
+                ntdll, "NtSetInformationProcess");
+        }
+    }
+
+    return fn;
+}
+
+/* ------------------------------------------------------------------ */
+/* Privileges & System Info                                           */
+/* ------------------------------------------------------------------ */
+
+BOOL LimiterIsRunAsAdmin(void) {
+    BOOL isAdmin = FALSE;
+    PSID adminGroup = NULL;
+    SID_IDENTIFIER_AUTHORITY ntAuthority = SECURITY_NT_AUTHORITY;
+
+    if (AllocateAndInitializeSid(
+            &ntAuthority,
+            2,
+            SECURITY_BUILTIN_DOMAIN_RID,
+            DOMAIN_ALIAS_RID_ADMINS,
+            0, 0, 0, 0, 0, 0,
+            &adminGroup)) {
+        if (!CheckTokenMembership(NULL, adminGroup, &isAdmin)) {
+            isAdmin = FALSE;
+        }
+        FreeSid(adminGroup);
+    }
+
+    return isAdmin;
+}
+
+BOOL LimiterEnableDebugPrivilege(DWORD *outError) {
+    HANDLE hToken;
+    TOKEN_PRIVILEGES tp;
+    LUID luid;
+    BOOL ok;
+
+    *outError = ERROR_SUCCESS;
+
+    if (!OpenProcessToken(
+            GetCurrentProcess(),
+            TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY,
+            &hToken)) {
+        *outError = GetLastError();
+        return FALSE;
+    }
+
+    if (!LookupPrivilegeValueW(NULL, SE_DEBUG_NAME, &luid)) {
+        *outError = GetLastError();
+        CloseHandle(hToken);
+        return FALSE;
+    }
+
+    tp.PrivilegeCount = 1;
+    tp.Privileges[0].Luid = luid;
+    tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+
+    SetLastError(ERROR_SUCCESS);
+
+    ok = AdjustTokenPrivileges(hToken, FALSE, &tp, sizeof(tp), NULL, NULL);
+
+    *outError = GetLastError();
+    CloseHandle(hToken);
+
+    return ok && *outError == ERROR_SUCCESS;
+}
+
+DWORD LimiterGetLogicalCpuCount(void) {
+    SYSTEM_INFO si;
+
+    GetSystemInfo(&si);
+
+    return si.dwNumberOfProcessors > 0 ? si.dwNumberOfProcessors : 1;
+}
+
+DWORD_PTR LimiterGetLastCpuAffinityMask(DWORD cpuCount) {
+    DWORD bitCount = (DWORD)(sizeof(DWORD_PTR) * 8);
+
+    if (cpuCount < 1) {
+        cpuCount = 1;
+    }
+
+    if (cpuCount > bitCount) {
+        cpuCount = bitCount;
+    }
+
+    return ((DWORD_PTR)1) << (cpuCount - 1);
+}
+
+/* ------------------------------------------------------------------ */
+/* Process Discovery                                                  */
+/* ------------------------------------------------------------------ */
+
+int LimiterScanTargets(TARGET *targets, int cap, DWORD *outError, BOOL *outTruncated) {
+    HANDLE snapshot;
+    PROCESSENTRY32W pe;
+    int n = 0;
+
+    *outError = 0;
+    *outTruncated = FALSE;
+
+    snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+
+    if (snapshot == INVALID_HANDLE_VALUE) {
+        *outError = GetLastError();
+        return -1;
+    }
+
+    memset(&pe, 0, sizeof(pe));
+    pe.dwSize = sizeof(pe);
+
+    if (!Process32FirstW(snapshot, &pe)) {
+        *outError = GetLastError();
+        CloseHandle(snapshot);
+        return -1;
+    }
+
+    do {
+        if (!ConfigIsTargetProcess(pe.szExeFile)) {
+            continue;
+        }
+        if (n < cap) {
+            targets[n].pid = pe.th32ProcessID;
+            wcsncpy(targets[n].name, pe.szExeFile, 31);
+            targets[n].name[31] = 0;
+            n++;
+        } else {
+            *outTruncated = TRUE;
+        }
+    } while (Process32NextW(snapshot, &pe));
+
+    CloseHandle(snapshot);
+    return n;
+}
+
+/* ------------------------------------------------------------------ */
+/* Process Tweaks: EcoQoS, I/O, Memory, CPU Cap, Threads              */
+/* ------------------------------------------------------------------ */
+
+static BOOL EnableEfficiencyMode(HANDLE hProcess, DWORD *outError) {
+    PROCESS_POWER_THROTTLING_STATE state = {
+        PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+        PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
+        PROCESS_POWER_THROTTLING_EXECUTION_SPEED
+    };
+    PROCESS_POWER_THROTTLING_STATE check;
+
+    *outError = ERROR_SUCCESS;
+
+    if (!SetProcessInformation(
+            hProcess,
+            PIC_POWER_THROTTLING,
+            &state,
+            sizeof(state))) {
+        *outError = GetLastError();
+        return FALSE;
+    }
+
+    if (GetProcessInformation(
+            hProcess,
+            PIC_POWER_THROTTLING,
+            &check,
+            sizeof(check)) &&
+        !(check.StateMask & PROCESS_POWER_THROTTLING_EXECUTION_SPEED)) {
+        *outError = ERROR_NOT_VERIFIED;
+        return FALSE;
+    }
+
+    return TRUE;
+}
+
+/* I/O priority has no Win32 API; it is set through NtSetInformationProcess
+   with ProcessIoPriority (PROCESSINFOCLASS 0x21). */
+static BOOL SetVeryLowIoPriority(HANDLE hProcess, DWORD *outError) {
+    PFN_NtSetInformationProcess fn = LoadNtSetInformationProcess();
+    ULONG hint = IO_PRIORITY_VERY_LOW;
+    LONG status;
+
+    *outError = ERROR_SUCCESS;
+
+    if (!fn) {
+        *outError = ERROR_NOT_SUPPORTED;
+        return FALSE;
+    }
+
+    status = fn(hProcess, NT_PROCESS_IO_PRIORITY, &hint, sizeof(hint));
+
+    if (!NT_SUCCESS(status)) {
+        *outError = (DWORD)status;
+        return FALSE;
+    }
+
+    return TRUE;
+}
+
+static BOOL SetVeryLowMemoryPriority(HANDLE hProcess, DWORD *outError) {
+    MEMORY_PRIORITY_INFORMATION mp;
+    MEMORY_PRIORITY_INFORMATION check;
+
+    *outError = ERROR_SUCCESS;
+    mp.MemoryPriority = MEMORY_PRIORITY_VERY_LOW;
+
+    if (!SetProcessInformation(
+            hProcess,
+            PIC_MEMORY_PRIORITY,
+            &mp,
+            sizeof(mp))) {
+        *outError = GetLastError();
+        return FALSE;
+    }
+
+    if (GetProcessInformation(
+            hProcess,
+            PIC_MEMORY_PRIORITY,
+            &check,
+            sizeof(check)) &&
+        check.MemoryPriority != MEMORY_PRIORITY_VERY_LOW) {
+        *outError = ERROR_NOT_VERIFIED;
+        return FALSE;
+    }
+
+    return TRUE;
+}
+
+/* A job's CpuRate is a share of the whole machine, not of one logical CPU,
+   so a per-CPU percentage has to be scaled by the processor count. */
+static DWORD CpuRateFromPercent(DWORD percent, DWORD cpuCount) {
+    unsigned long long rate;
+
+    if (cpuCount < 1) {
+        cpuCount = 1;
+    }
+    if (percent < 1) {
+        percent = 1;
+    }
+
+    rate = ((unsigned long long)percent * 100ULL) / cpuCount;
+
+    if (rate < 1) {
+        rate = 1;
+    }
+    if (rate > 10000) {
+        rate = 10000;
+    }
+
+    return (DWORD)rate;
+}
+
+/* Hard CPU ceiling. A process cannot leave a job it did not create, so
+   unlike the other knobs this one cannot be undone by the target.
+   Needs PROCESS_SET_QUOTA | PROCESS_TERMINATE on the handle. */
+static BOOL ApplyCpuCap(HANDLE hProcess, DWORD percent, DWORD *outError) {
+    HANDLE job;
+    ACE_CPU_RATE info;
+    ACE_CPU_RATE check;
+    DWORD returned = 0;
+
+    *outError = ERROR_SUCCESS;
+
+    if (percent < 1) {
+        percent = 1;
+    }
+    if (percent > 100) {
+        percent = 100;
+    }
+
+    job = CreateJobObjectW(NULL, NULL);
+
+    if (!job) {
+        *outError = GetLastError();
+        return FALSE;
+    }
+
+    info.ControlFlags =
+        JOB_OBJECT_CPU_RATE_CONTROL_ENABLE | JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP;
+    info.CpuRate = CpuRateFromPercent(percent, LimiterGetLogicalCpuCount());
+
+    if (!SetInformationJobObject(job, JobObjectCpuRateControlInformation, &info, sizeof(info))) {
+        *outError = GetLastError();
+        CloseHandle(job);
+        return FALSE;
+    }
+
+    if (!AssignProcessToJobObject(job, hProcess)) {
+        *outError = GetLastError();
+        CloseHandle(job);
+        return FALSE;
+    }
+
+    if (QueryInformationJobObject(
+            job,
+            JobObjectCpuRateControlInformation,
+            &check,
+            sizeof(check),
+            &returned) &&
+        !(check.ControlFlags & JOB_OBJECT_CPU_RATE_CONTROL_ENABLE)) {
+        *outError = ERROR_NOT_VERIFIED;
+        CloseHandle(job);
+        return FALSE;
+    }
+
+    /* Documented: the job survives while its processes run, so dropping
+       our handle keeps the cap in force without holding the process. */
+    CloseHandle(job);
+    return TRUE;
+}
+
+/* SetPriorityClass only shifts the base priority of threads that are at
+   their normal value, so pin every thread explicitly. */
+static BOOL IdleThreads(DWORD pid, int *setCount, int *totalCount, DWORD *outError) {
+    HANDLE snapshot;
+    THREADENTRY32 te;
+    int total = 0;
+    int done = 0;
+    int failed = 0;
+    DWORD firstErr = ERROR_SUCCESS;
+
+    *outError = ERROR_SUCCESS;
+    *setCount = 0;
+    *totalCount = 0;
+
+    snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+
+    if (snapshot == INVALID_HANDLE_VALUE) {
+        *outError = GetLastError();
+        return FALSE;
+    }
+
+    memset(&te, 0, sizeof(te));
+    te.dwSize = sizeof(te);
+
+    if (!Thread32First(snapshot, &te)) {
+        DWORD err = GetLastError();
+        CloseHandle(snapshot);
+
+        if (err == ERROR_NO_MORE_FILES) {
+            return TRUE;
+        }
+
+        *outError = err;
+        return FALSE;
+    }
+
+    do {
+        HANDLE hThread;
+        DWORD err;
+
+        if (te.th32OwnerProcessID != pid) {
+            continue;
+        }
+
+        total++;
+        hThread = OpenThread(THREAD_SET_INFORMATION, FALSE, te.th32ThreadID);
+
+        if (!hThread) {
+            err = GetLastError();
+            if (err == ERROR_INVALID_PARAMETER) {
+                continue;   /* thread exited between snapshot and open */
+            }
+            failed++;
+            if (firstErr == ERROR_SUCCESS) {
+                firstErr = err;
+            }
+            continue;
+        }
+
+        if (SetThreadPriority(hThread, THREAD_PRIORITY_IDLE)) {
+            done++;
+        } else {
+            failed++;
+            if (firstErr == ERROR_SUCCESS) {
+                firstErr = GetLastError();
+            }
+        }
+
+        CloseHandle(hThread);
+    } while (Thread32Next(snapshot, &te));
+
+    CloseHandle(snapshot);
+
+    *setCount = done;
+    *totalCount = total;
+
+    if (failed > 0) {
+        *outError = firstErr;
+        return FALSE;
+    }
+
+    return TRUE;
+}
+
+static HANDLE OpenTargetProcess(DWORD pid, DWORD *outRights, DWORD *outError) {
+    static const DWORD kFullRights =
+        PROCESS_SET_INFORMATION | PROCESS_SET_QUOTA | PROCESS_TERMINATE |
+        PROCESS_QUERY_LIMITED_INFORMATION;
+    static const DWORD kBasicRights =
+        PROCESS_SET_INFORMATION | PROCESS_QUERY_LIMITED_INFORMATION;
+    DWORD firstErr = ERROR_SUCCESS;
+    HANDLE hProcess;
+
+    *outRights = 0;
+    *outError = ERROR_SUCCESS;
+
+    hProcess = OpenProcess(kFullRights, FALSE, pid);
+    if (hProcess) {
+        *outRights = kFullRights;
+        return hProcess;
+    }
+    firstErr = GetLastError();
+
+    hProcess = OpenProcess(kBasicRights, FALSE, pid);
+    if (hProcess) {
+        *outRights = kBasicRights;
+        return hProcess;
+    }
+
+    if (firstErr == ERROR_SUCCESS) {
+        firstErr = GetLastError();
+    }
+
+    hProcess = OpenProcess(PROCESS_SET_INFORMATION, FALSE, pid);
+    if (hProcess) {
+        *outRights = PROCESS_SET_INFORMATION;
+        return hProcess;
+    }
+
+    *outError = firstErr;
+    return NULL;
+}
+
+/* Guards against a pid that was recycled between scan and open. If the
+   name cannot be read we assume the handle is still the right process. */
+static BOOL VerifyTargetName(HANDLE hProcess, const wchar_t *expected) {
+    wchar_t path[MAX_PATH];
+    DWORD len = MAX_PATH;
+    const wchar_t *base;
+
+    if (!QueryFullProcessImageNameW(hProcess, 0, path, &len)) {
+        return TRUE;
+    }
+
+    base = wcsrchr(path, L'\\');
+    base = base ? base + 1 : path;
+
+    return _wcsicmp(base, expected) == 0;
+}
+
+PROCESS_RESULT LimiterApplySettings(
+    DWORD pid,
+    const wchar_t *expectedName,
+    DWORD_PTR affinityMask,
+    DWORD cpuCapPercent
+) {
+    PROCESS_RESULT r;
+    HANDLE hProcess;
+    DWORD rights = 0;
+    DWORD openErr = 0;
+    BOOL haveJobRights;
+    int i;
+
+    memset(&r, 0, sizeof(r));
+
+    hProcess = OpenTargetProcess(pid, &rights, &openErr);
+
+    if (!hProcess) {
+        r.openErr = openErr;
+        return r;
+    }
+
+    r.opened = TRUE;
+
+    if (!VerifyTargetName(hProcess, expectedName)) {
+        r.stale = TRUE;
+        CloseHandle(hProcess);
+        return r;
+    }
+
+    haveJobRights = (rights & PROCESS_SET_QUOTA) && (rights & PROCESS_TERMINATE);
+
+    r.attempted[STEP_PRI] = TRUE;
+    if (SetPriorityClass(hProcess, IDLE_PRIORITY_CLASS)) {
+        if (GetPriorityClass(hProcess) == IDLE_PRIORITY_CLASS) {
+            r.ok[STEP_PRI] = TRUE;
+        } else {
+            r.err[STEP_PRI] = ERROR_NOT_VERIFIED;
+        }
+    } else {
+        r.err[STEP_PRI] = GetLastError();
+    }
+
+    r.attempted[STEP_AFF] = TRUE;
+    if (SetProcessAffinityMask(hProcess, affinityMask)) {
+        DWORD_PTR procMask = 0;
+        DWORD_PTR sysMask = 0;
+
+        if (GetProcessAffinityMask(hProcess, &procMask, &sysMask) &&
+            procMask != affinityMask) {
+            r.err[STEP_AFF] = ERROR_NOT_VERIFIED;
+        } else {
+            r.ok[STEP_AFF] = TRUE;
+        }
+    } else {
+        r.err[STEP_AFF] = GetLastError();
+    }
+
+    r.attempted[STEP_ECO] = TRUE;
+    if (!EnableEfficiencyMode(hProcess, &r.err[STEP_ECO])) {
+        r.ok[STEP_ECO] = FALSE;
+    } else {
+        r.ok[STEP_ECO] = TRUE;
+    }
+
+    if (cpuCapPercent > 0 && haveJobRights) {
+        r.attempted[STEP_CAP] = TRUE;
+        if (ApplyCpuCap(hProcess, cpuCapPercent, &r.err[STEP_CAP])) {
+            r.ok[STEP_CAP] = TRUE;
+        }
+    }
+
+    r.attempted[STEP_IO] = TRUE;
+    if (SetVeryLowIoPriority(hProcess, &r.err[STEP_IO])) {
+        r.ok[STEP_IO] = TRUE;
+    }
+
+    r.attempted[STEP_MEM] = TRUE;
+    if (SetVeryLowMemoryPriority(hProcess, &r.err[STEP_MEM])) {
+        r.ok[STEP_MEM] = TRUE;
+    }
+
+    CloseHandle(hProcess);
+
+    r.attempted[STEP_THR] = TRUE;
+    if (IdleThreads(pid, &r.thrSet, &r.thrTotal, &r.err[STEP_THR])) {
+        r.ok[STEP_THR] = TRUE;
+    }
+
+    for (i = 0; i < STEP_COUNT; i++) {
+        if (r.attempted[i]) {
+            r.attemptCount++;
+            if (r.ok[i]) {
+                r.okCount++;
+            }
+        }
+    }
+
+    return r;
+}

@@ -11,11 +11,12 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 gcc -Os -Wall -Wextra -municode -mconsole `
+    -Isrc `
     -s -fno-asynchronous-unwind-tables `
     -ffunction-sections -fdata-sections `
     "-Wl,--gc-sections" "-Wl,--file-alignment=512" `
     "-Wl,--nxcompat" "-Wl,--dynamicbase" "-Wl,--high-entropy-va" `
-    fuckace.c fuckace_res.o -o fuckAce.exe
+    src/main.c src/config.c src/limiter.c src/ui.c src/engine.c fuckace_res.o -o fuckAce.exe
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
