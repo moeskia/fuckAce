@@ -235,7 +235,7 @@ void UIDrawTiming(ULONGLONG elapsedMs, const char *machine) {
 
     GetLocalTime(&st);
 
-    UISegSet(&timing[m++], COLOR_HEAD, " Time     ");
+    UISegSet(&timing[m++], COLOR_HEAD, " Time ");
     UISegSet(&timing[m++], COLOR_WHITE, "%04d-%02d-%02d %02d:%02d:%02d",
              st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
     UISegSet(&timing[m++], COLOR_HEAD, " · ");
