@@ -18,7 +18,10 @@
                        FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE | FOREGROUND_INTENSITY)
 #define COLOR_WARN_BG (BACKGROUND_RED | BACKGROUND_GREEN | BACKGROUND_INTENSITY)
 
-#define CONTENT_WIDTH 86
+/* Total box width in columns. The widest row is the results table: 4 columns
+   of index/name/pid framing plus 7 six-column cells needs 79, so 81 leaves a
+   little slack. */
+#define CONTENT_WIDTH 81
 #define CELL_W 6
 #define NAME_W 15
 
