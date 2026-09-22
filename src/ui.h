@@ -45,6 +45,8 @@ void UISegCell(SEG *seg, BOOL attempted, BOOL ok, DWORD err);
 const char *UIShortReason(DWORD err);
 void UIAddNote(char *buf, size_t size, size_t *pos, const char *fmt, ...);
 void UIReportProcess(int index, const TARGET *target, const PROCESS_RESULT *r);
+void UIDrawTiming(ULONGLONG elapsedMs, const char *machine);
+void UIUpdateTiming(void);
 int UICountdown(const char *label, const char *hint, int seconds);
 
 #endif /* UI_H */

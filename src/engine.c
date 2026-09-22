@@ -261,11 +261,8 @@ int EngineRunOnce(BOOL isFirst) {
         }
 
         {
-            SYSTEMTIME st;
             char machine[MAX_COMPUTERNAME_LENGTH + 2];
             DWORD machineLen = sizeof(machine);
-
-            GetLocalTime(&st);
 
             if (!GetComputerNameA(machine, &machineLen)) {
                 machine[0] = 0;
@@ -319,20 +316,7 @@ int EngineRunOnce(BOOL isFirst) {
                 UIBoxRow(t, tgt);
             }
 
-            {
-                SEG timing[8];
-                int m = 0;
-
-                UISegSet(&timing[m++], COLOR_HEAD, " timing   ");
-                UISegSet(&timing[m++], COLOR_WHITE, "%04d-%02d-%02d %02d:%02d:%02d",
-                         st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
-                UISegSet(&timing[m++], COLOR_HEAD, " · ");
-                UISegSet(&timing[m++], COLOR_WHITE, "%llu ms",
-                         (unsigned long long)(GetTickCount64() - t0));
-                UISegSet(&timing[m++], COLOR_HEAD, " · ");
-                UISegSet(&timing[m++], COLOR_WHITE, "%s", machine);
-                UIBoxRow(m, timing);
-            }
+            UIDrawTiming(GetTickCount64() - t0, machine);
         }
 
         UIBoxRule("└", "┘");

@@ -213,6 +213,62 @@ void UILayoutConsole(int contentRows) {
     }
 }
 
+static COORD g_timingPos = {-1, -1};
+static ULONGLONG g_lastElapsedMs = 0;
+static char g_lastMachine[MAX_COMPUTERNAME_LENGTH + 2] = {0};
+
+void UIDrawTiming(ULONGLONG elapsedMs, const char *machine) {
+    SYSTEMTIME st;
+    SEG timing[8];
+    int m = 0;
+    CONSOLE_SCREEN_BUFFER_INFO csbi;
+
+    g_lastElapsedMs = elapsedMs;
+    if (machine) {
+        strncpy(g_lastMachine, machine, sizeof(g_lastMachine) - 1);
+        g_lastMachine[sizeof(g_lastMachine) - 1] = 0;
+    }
+
+    if (GetConsoleScreenBufferInfo(g_console, &csbi)) {
+        g_timingPos = csbi.dwCursorPosition;
+    }
+
+    GetLocalTime(&st);
+
+    UISegSet(&timing[m++], COLOR_HEAD, " timing   ");
+    UISegSet(&timing[m++], COLOR_WHITE, "%04d-%02d-%02d %02d:%02d:%02d",
+             st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+    UISegSet(&timing[m++], COLOR_HEAD, " · ");
+    UISegSet(&timing[m++], COLOR_WHITE, "%llu ms", (unsigned long long)g_lastElapsedMs);
+    UISegSet(&timing[m++], COLOR_HEAD, " · ");
+    UISegSet(&timing[m++], COLOR_WHITE, "%s", g_lastMachine);
+    UIBoxRow(m, timing);
+}
+
+void UIUpdateTiming(void) {
+    DWORD mode = 0;
+    BOOL isVT = GetConsoleMode(g_console, &mode) && (mode & ENABLE_VIRTUAL_TERMINAL_PROCESSING);
+
+    if (isVT) {
+        fputs("\x1b[s\x1b[3A\r", stdout);
+        UIDrawTiming(g_lastElapsedMs, g_lastMachine);
+        fputs("\x1b[u", stdout);
+        fflush(stdout);
+        return;
+    }
+
+    if (g_timingPos.Y >= 0) {
+        CONSOLE_SCREEN_BUFFER_INFO csbi;
+        COORD savedPos = {0, 0};
+        if (GetConsoleScreenBufferInfo(g_console, &csbi)) {
+            savedPos = csbi.dwCursorPosition;
+        }
+        SetConsoleCursorPosition(g_console, g_timingPos);
+        UIDrawTiming(g_lastElapsedMs, g_lastMachine);
+        SetConsoleCursorPosition(g_console, savedPos);
+    }
+}
+
 int UICountdown(const char *label, const char *hint, int seconds) {
     int remaining = seconds;
     int ch;
@@ -220,9 +276,9 @@ int UICountdown(const char *label, const char *hint, int seconds) {
 
     putchar('\n');
     UISetColor(COLOR_HEAD);
-    printf(" %s", label);
+    printf(" %s ", label);
     UISetColor(COLOR_WHITE);
-    printf("  %2d s", remaining);
+    printf("%d s", remaining);
     UISetColor(COLOR_FRAME);
     printf("  (%s)", hint);
     UISetColor(COLOR_DEFAULT);
@@ -248,11 +304,13 @@ int UICountdown(const char *label, const char *hint, int seconds) {
             break;
         }
 
+        UIUpdateTiming();
+
         printf("\r");
         UISetColor(COLOR_HEAD);
-        printf(" %s", label);
+        printf(" %s ", label);
         UISetColor(COLOR_WHITE);
-        printf("  %2d s", remaining);
+        printf("%d s", remaining);
         UISetColor(COLOR_FRAME);
         printf("  (%s)", hint);
         UISetColor(COLOR_DEFAULT);
