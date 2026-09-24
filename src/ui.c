@@ -2,9 +2,13 @@
 
 static HANDLE g_console;
 static int g_width = 60;
+static BOOL g_timingDrawn = FALSE;
+static ULONGLONG g_lastElapsedMs = 0;
+static char g_lastMachine[MAX_COMPUTERNAME_LENGTH + 2] = {0};
 
 void UIInit(void) {
     DWORD mode = 0;
+
     SetConsoleOutputCP(CP_UTF8);
     g_console = GetStdHandle(STD_OUTPUT_HANDLE);
     if (GetConsoleMode(g_console, &mode)) {
@@ -14,6 +18,7 @@ void UIInit(void) {
 
 void UIShowCursor(BOOL show) {
     CONSOLE_CURSOR_INFO info;
+
     if (GetConsoleCursorInfo(g_console, &info)) {
         info.bVisible = show;
         SetConsoleCursorInfo(g_console, &info);
@@ -22,38 +27,40 @@ void UIShowCursor(BOOL show) {
 
 void UIResetCursor(void) {
     DWORD mode = 0;
-    if (GetConsoleMode(g_console, &mode) &&
-        (mode & ENABLE_VIRTUAL_TERMINAL_PROCESSING)) {
+
+    if (GetConsoleMode(g_console, &mode) && (mode & ENABLE_VIRTUAL_TERMINAL_PROCESSING)) {
         fputs("\x1b[H", stdout);
         fflush(stdout);
         return;
     }
-
-    CONSOLE_SCREEN_BUFFER_INFO csbi;
-    if (GetConsoleScreenBufferInfo(g_console, &csbi)) {
-        COORD origin = {0, csbi.srWindow.Top};
-        SetConsoleCursorPosition(g_console, origin);
+    {
+        CONSOLE_SCREEN_BUFFER_INFO info;
+        if (GetConsoleScreenBufferInfo(g_console, &info)) {
+            COORD origin = {0, info.srWindow.Top};
+            SetConsoleCursorPosition(g_console, origin);
+        }
     }
 }
 
 void UIClearToEnd(void) {
     DWORD mode = 0;
-    if (GetConsoleMode(g_console, &mode) &&
-        (mode & ENABLE_VIRTUAL_TERMINAL_PROCESSING)) {
+
+    if (GetConsoleMode(g_console, &mode) && (mode & ENABLE_VIRTUAL_TERMINAL_PROCESSING)) {
         fputs("\x1b[J", stdout);
         fflush(stdout);
         return;
     }
-
-    CONSOLE_SCREEN_BUFFER_INFO csbi;
-    if (GetConsoleScreenBufferInfo(g_console, &csbi)) {
-        DWORD curPos = (DWORD)csbi.dwCursorPosition.Y * (DWORD)csbi.dwSize.X + (DWORD)csbi.dwCursorPosition.X;
-        DWORD total = (DWORD)csbi.dwSize.X * (DWORD)csbi.dwSize.Y;
-        if (total > curPos) {
-            DWORD cells = total - curPos;
-            DWORD written;
-            FillConsoleOutputCharacterW(g_console, L' ', cells, csbi.dwCursorPosition, &written);
-            FillConsoleOutputAttribute(g_console, COLOR_DEFAULT, cells, csbi.dwCursorPosition, &written);
+    {
+        CONSOLE_SCREEN_BUFFER_INFO info;
+        if (GetConsoleScreenBufferInfo(g_console, &info)) {
+            DWORD position = (DWORD)info.dwCursorPosition.Y * (DWORD)info.dwSize.X + (DWORD)info.dwCursorPosition.X;
+            DWORD total = (DWORD)info.dwSize.X * (DWORD)info.dwSize.Y;
+            if (total > position) {
+                DWORD cells = total - position;
+                DWORD written;
+                FillConsoleOutputCharacterW(g_console, L' ', cells, info.dwCursorPosition, &written);
+                FillConsoleOutputAttribute(g_console, COLOR_DEFAULT, cells, info.dwCursorPosition, &written);
+            }
         }
     }
 }
@@ -62,20 +69,19 @@ static void UISetColor(WORD color) {
     SetConsoleTextAttribute(g_console, color);
 }
 
-static int UIUtf8Len(const char *s) {
-    int n = 0;
+static int UIUtf8Len(const char *text) {
+    int length = 0;
 
-    for (; *s; s++) {
-        if ((*s & 0xC0) != 0x80) {
-            n++;
+    for (; *text; text++) {
+        if ((*text & 0xC0) != 0x80) {
+            length++;
         }
     }
-
-    return n;
+    return length;
 }
 
-static const char *UIShortReason(DWORD err) {
-    switch (err) {
+static const char *UIShortReason(DWORD error) {
+    switch (error) {
     case ERROR_SUCCESS:
         return "ok";
     case ERROR_ACCESS_DENIED:
@@ -98,6 +104,8 @@ static const char *UIShortReason(DWORD err) {
         return "partial copy";
     case ERROR_NOT_VERIFIED:
         return "not applied";
+    case ERROR_JOB_CONFLICT:
+        return "job conflict";
     }
     return "";
 }
@@ -111,170 +119,156 @@ void UIClearScreen(void) {
         fflush(stdout);
         return;
     }
+    {
+        CONSOLE_SCREEN_BUFFER_INFO info;
+        DWORD cells;
+        DWORD written;
+        COORD origin = {0, 0};
 
-    CONSOLE_SCREEN_BUFFER_INFO csbi;
-    DWORD cells;
-    DWORD written;
-    COORD origin = {0, 0};
-
-    if (!GetConsoleScreenBufferInfo(g_console, &csbi)) {
-        return;
+        if (!GetConsoleScreenBufferInfo(g_console, &info)) {
+            return;
+        }
+        cells = (DWORD)info.dwSize.X * (DWORD)info.dwSize.Y;
+        FillConsoleOutputCharacterW(g_console, L' ', cells, origin, &written);
+        FillConsoleOutputAttribute(g_console, COLOR_DEFAULT, cells, origin, &written);
+        SetConsoleCursorPosition(g_console, origin);
     }
-
-    cells = (DWORD)csbi.dwSize.X * (DWORD)csbi.dwSize.Y;
-
-    FillConsoleOutputCharacterW(g_console, L' ', cells, origin, &written);
-    FillConsoleOutputAttribute(g_console, COLOR_DEFAULT, cells, origin, &written);
-    SetConsoleCursorPosition(g_console, origin);
 }
 
 void UILayoutConsole(int contentRows) {
-    CONSOLE_SCREEN_BUFFER_INFO csbi;
-    COORD max;
+    CONSOLE_SCREEN_BUFFER_INFO info;
+    COORD maximum;
     COORD size;
     COORD origin = {0, 0};
-    SMALL_RECT tmp;
+    SMALL_RECT temporary;
     SMALL_RECT rect;
     DWORD cells;
     DWORD written;
-    int curW;
-    int curH;
-    int wantW;
-    int wantH;
-    int bufH;
+    int currentWidth;
+    int currentHeight;
+    int wantedWidth;
+    int wantedHeight;
 
-    if (!GetConsoleScreenBufferInfo(g_console, &csbi)) {
+    if (!GetConsoleScreenBufferInfo(g_console, &info)) {
         g_width = CONTENT_WIDTH;
         return;
     }
-
-    curW = csbi.srWindow.Right - csbi.srWindow.Left + 1;
-    curH = csbi.srWindow.Bottom - csbi.srWindow.Top + 1;
-    max = GetLargestConsoleWindowSize(g_console);
-
-    wantW = CONTENT_WIDTH;
-
-    /* Three quarters of the old budget: (contentRows + 4) rows left the
-       window with a lot of empty space under the box. */
-    wantH = (contentRows + 4) * 3 / 4;
-
-    if (wantH < 18) {           /* 24 * 3 / 4 */
-        wantH = 18;
+    currentWidth = info.srWindow.Right - info.srWindow.Left + 1;
+    currentHeight = info.srWindow.Bottom - info.srWindow.Top + 1;
+    maximum = GetLargestConsoleWindowSize(g_console);
+    wantedWidth = CONTENT_WIDTH;
+    wantedHeight = (contentRows + 4) * 3 / 4;
+    if (wantedHeight < 18) {
+        wantedHeight = 18;
     }
-    if (max.X <= 0 || max.Y <= 0) {
+    if (maximum.X <= 0 || maximum.Y <= 0) {
         g_width = CONTENT_WIDTH;
         return;
     }
-    if (wantW > max.X) {
-        wantW = max.X;
+    if (wantedWidth > maximum.X) {
+        wantedWidth = maximum.X;
     }
-    if (wantW < 20) {
-        wantW = 20;
+    if (wantedWidth < 20) {
+        wantedWidth = 20;
     }
-    if (wantH > max.Y) {
-        wantH = max.Y;
+    if (wantedHeight > maximum.Y) {
+        wantedHeight = maximum.Y;
     }
-
-    bufH = wantH;
-
-    if (curW == wantW && curH == wantH &&
-        csbi.dwSize.X == wantW && csbi.dwSize.Y == bufH) {
-        g_width = wantW;
+    if (currentWidth == wantedWidth &&
+        currentHeight == wantedHeight &&
+        info.dwSize.X == wantedWidth &&
+        info.dwSize.Y == wantedHeight) {
+        g_width = wantedWidth;
         return;
     }
-
-    tmp.Left = 0;
-    tmp.Top = 0;
-    tmp.Right = 1;
-    tmp.Bottom = 1;
-    SetConsoleWindowInfo(g_console, TRUE, &tmp);
-
-    size.X = (SHORT)wantW;
-    size.Y = (SHORT)bufH;
-
+    temporary.Left = 0;
+    temporary.Top = 0;
+    temporary.Right = 1;
+    temporary.Bottom = 1;
+    SetConsoleWindowInfo(g_console, TRUE, &temporary);
+    size.X = (SHORT)wantedWidth;
+    size.Y = (SHORT)wantedHeight;
     if (!SetConsoleScreenBufferSize(g_console, size)) {
-        SetConsoleWindowInfo(g_console, TRUE, &csbi.srWindow);
-        g_width = curW;
+        SetConsoleWindowInfo(g_console, TRUE, &info.srWindow);
+        g_width = currentWidth;
         return;
     }
-
     rect.Left = 0;
     rect.Top = 0;
-    rect.Right = (SHORT)(wantW - 1);
-    rect.Bottom = (SHORT)(wantH - 1);
+    rect.Right = (SHORT)(wantedWidth - 1);
+    rect.Bottom = (SHORT)(wantedHeight - 1);
     SetConsoleWindowInfo(g_console, TRUE, &rect);
-
-    cells = (DWORD)wantW * (DWORD)bufH;
+    cells = (DWORD)wantedWidth * (DWORD)wantedHeight;
     FillConsoleOutputCharacterW(g_console, L' ', cells, origin, &written);
     FillConsoleOutputAttribute(g_console, COLOR_DEFAULT, cells, origin, &written);
     SetConsoleCursorPosition(g_console, origin);
-
-    if (GetConsoleScreenBufferInfo(g_console, &csbi)) {
-        g_width = csbi.srWindow.Right - csbi.srWindow.Left + 1;
+    if (GetConsoleScreenBufferInfo(g_console, &info)) {
+        g_width = info.srWindow.Right - info.srWindow.Left + 1;
     } else {
-        g_width = wantW;
+        g_width = wantedWidth;
     }
 }
 
-static BOOL g_timingDrawn = FALSE;
-static ULONGLONG g_lastElapsedMs = 0;
-static char g_lastMachine[MAX_COMPUTERNAME_LENGTH + 2] = {0};
+static void DrawTiming(ULONGLONG elapsedMs, const char *machine) {
+    SYSTEMTIME time;
+    SEG timing[8];
+    int count = 0;
+
+    GetLocalTime(&time);
+    UISegSet(&timing[count++], COLOR_HEAD, " Time ");
+    UISegSet(
+        &timing[count++],
+        COLOR_WHITE,
+        "%04d-%02d-%02d %02d:%02d:%02d",
+        time.wYear,
+        time.wMonth,
+        time.wDay,
+        time.wHour,
+        time.wMinute,
+        time.wSecond);
+    UISegSet(&timing[count++], COLOR_HEAD, " · ");
+    UISegSet(&timing[count++], COLOR_WHITE, "%llu ms", (unsigned long long)elapsedMs);
+    UISegSet(&timing[count++], COLOR_HEAD, " · ");
+    UISegSet(&timing[count++], COLOR_WHITE, "%s", machine ? machine : "");
+    UIBoxRow(count, timing);
+}
+
+void UIResetTiming(void) {
+    g_timingDrawn = FALSE;
+    g_lastElapsedMs = 0;
+    g_lastMachine[0] = 0;
+}
 
 void UIDrawTiming(ULONGLONG elapsedMs, const char *machine) {
-    SYSTEMTIME st;
-    SEG timing[8];
-    int m = 0;
-
     g_lastElapsedMs = elapsedMs;
     if (machine) {
         strncpy(g_lastMachine, machine, sizeof(g_lastMachine) - 1);
         g_lastMachine[sizeof(g_lastMachine) - 1] = 0;
+    } else {
+        g_lastMachine[0] = 0;
     }
-
     g_timingDrawn = TRUE;
-
-    GetLocalTime(&st);
-
-    UISegSet(&timing[m++], COLOR_HEAD, " Time ");
-    UISegSet(&timing[m++], COLOR_WHITE, "%04d-%02d-%02d %02d:%02d:%02d",
-             st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
-    UISegSet(&timing[m++], COLOR_HEAD, " · ");
-    UISegSet(&timing[m++], COLOR_WHITE, "%llu ms", (unsigned long long)g_lastElapsedMs);
-    UISegSet(&timing[m++], COLOR_HEAD, " · ");
-    UISegSet(&timing[m++], COLOR_WHITE, "%s", g_lastMachine);
-    UIBoxRow(m, timing);
+    DrawTiming(g_lastElapsedMs, g_lastMachine);
 }
 
-/* Redraw the timing row in place. UICountdown always draws its line a fixed
-   distance below that row (timing, bottom rule, blank line, countdown), so
-   the redraw moves relative to the cursor: an absolute buffer coordinate
-   goes stale the moment the box is taller than the window and the console
-   scrolls it up, while a relative move survives that. */
 #define TIMING_ROWS_ABOVE_COUNTDOWN 3
 
 static void UIUpdateTiming(void) {
-    CONSOLE_SCREEN_BUFFER_INFO csbi;
+    CONSOLE_SCREEN_BUFFER_INFO info;
     COORD saved;
     COORD target;
 
-    if (!g_timingDrawn) {
+    if (!g_timingDrawn || !GetConsoleScreenBufferInfo(g_console, &info)) {
         return;
     }
-
-    if (!GetConsoleScreenBufferInfo(g_console, &csbi)) {
-        return;
-    }
-
-    saved = csbi.dwCursorPosition;
-
+    saved = info.dwCursorPosition;
     target.Y = (SHORT)(saved.Y - TIMING_ROWS_ABOVE_COUNTDOWN);
     if (target.Y < 0) {
         target.Y = 0;
     }
     target.X = 0;
-
     SetConsoleCursorPosition(g_console, target);
-    UIDrawTiming(g_lastElapsedMs, g_lastMachine);
+    DrawTiming(g_lastElapsedMs, g_lastMachine);
     fflush(stdout);
     SetConsoleCursorPosition(g_console, saved);
 }
@@ -292,49 +286,42 @@ static void DrawCountdownLine(const char *label, const char *hint, int remaining
 
 int UICountdown(const char *label, const char *hint, int seconds) {
     int remaining = seconds;
-    int ch;
     int tick;
 
     putchar('\n');
     DrawCountdownLine(label, hint, remaining);
-
     for (;;) {
         for (tick = 0; tick < 20; tick++) {
             if (_kbhit()) {
-                ch = _getch();
-
-                if (ch == 27) {
+                int key = _getch();
+                if (key == 27) {
                     printf("\n");
                     return 0;
                 }
-                if (ch == '\r' || ch == '\n') {
+                if (key == '\r' || key == '\n') {
                     return 1;
                 }
             }
             Sleep(50);
         }
-
         if (--remaining <= 0) {
             break;
         }
-
         UIUpdateTiming();
-
         printf("\r");
         DrawCountdownLine(label, hint, remaining);
     }
-
     return 1;
 }
 
-SEG *UISegSet(SEG *seg, WORD color, const char *fmt, ...) {
+SEG *UISegSet(SEG *segment, WORD color, const char *format, ...) {
     va_list args;
 
-    va_start(args, fmt);
-    vsnprintf(seg->text, sizeof(seg->text), fmt, args);
+    va_start(args, format);
+    vsnprintf(segment->text, sizeof(segment->text), format, args);
     va_end(args);
-    seg->color = color;
-    return seg;
+    segment->color = color;
+    return segment;
 }
 
 void UIBoxRule(const char *left, const char *right) {
@@ -350,20 +337,15 @@ void UIBoxRule(const char *left, const char *right) {
     UISetColor(COLOR_DEFAULT);
 }
 
-void UIBoxRow(int count, const SEG *segs) {
+void UIBoxRow(int count, const SEG *segments) {
     int used = 0;
-    int pad;
     int i;
 
     UISetColor(COLOR_FRAME);
     fputs("│ ", stdout);
     for (i = 0; i < count; i++) {
-        const char *text = segs[i].text;
+        const char *text = segments[i].text;
 
-        /* A run's background has to start at its first glyph: the space in
-           front of it belongs to the surrounding gap, not to the run.
-           Painting it with the run colour widened the coloured block by one
-           column the text never uses, while the text itself stayed put. */
         if (*text == ' ') {
             UISetColor(COLOR_FRAME);
             do {
@@ -371,17 +353,15 @@ void UIBoxRow(int count, const SEG *segs) {
                 text++;
             } while (*text == ' ');
         }
-
-        UISetColor(segs[i].color);
+        UISetColor(segments[i].color);
         fputs(text, stdout);
-        used += UIUtf8Len(segs[i].text);
+        used += UIUtf8Len(segments[i].text);
     }
     UISetColor(COLOR_FRAME);
     if (used > g_width - 4) {
         used = g_width - 4;
     }
-    pad = g_width - 4 - used;
-    for (i = 0; i < pad; i++) {
+    for (i = 0; i < g_width - 4 - used; i++) {
         putchar(' ');
     }
     fputs(" │", stdout);
@@ -389,15 +369,15 @@ void UIBoxRow(int count, const SEG *segs) {
     UISetColor(COLOR_DEFAULT);
 }
 
-void UIBoxLine(WORD color, const char *fmt, ...) {
-    SEG seg;
+void UIBoxLine(WORD color, const char *format, ...) {
+    SEG segment;
     va_list args;
 
-    va_start(args, fmt);
-    vsnprintf(seg.text, sizeof(seg.text), fmt, args);
+    va_start(args, format);
+    vsnprintf(segment.text, sizeof(segment.text), format, args);
     va_end(args);
-    seg.color = color;
-    UIBoxRow(1, &seg);
+    segment.color = color;
+    UIBoxRow(1, &segment);
 }
 
 static void UIBoxWrap(WORD color, const char *text) {
@@ -406,177 +386,171 @@ static void UIBoxWrap(WORD color, const char *text) {
     while (*text) {
         int budget = g_width - 4 - indent;
         const char *lastSpace = NULL;
-        char buf[200];
-        int len = 0;
+        char buffer[200];
+        int length = 0;
         SEG row[2];
 
         if (budget < 16) {
             budget = 16;
         }
-        if (budget > (int)sizeof(buf) - 1) {
-            budget = (int)sizeof(buf) - 1;
+        if (budget > (int)sizeof(buffer) - 1) {
+            budget = (int)sizeof(buffer) - 1;
         }
-
-        while (text[len] && len < budget) {
-            if (text[len] == ' ') {
-                lastSpace = text + len;
+        while (text[length] && length < budget) {
+            if (text[length] == ' ') {
+                lastSpace = text + length;
             }
-            len++;
+            length++;
         }
-
-        if (text[len] && lastSpace && lastSpace > text) {
-            len = (int)(lastSpace - text);
-        } else if (text[len]) {
-            /* one word wider than the row: break it so the box keeps its
-               width, but never inside a UTF-8 sequence */
-            while (len > 1 && ((unsigned char)text[len] & 0xC0) == 0x80) {
-                len--;
+        if (text[length] && lastSpace && lastSpace > text) {
+            length = (int)(lastSpace - text);
+        } else if (text[length]) {
+            while (length > 1 && ((unsigned char)text[length] & 0xC0) == 0x80) {
+                length--;
             }
         }
-
-        memcpy(buf, text, (size_t)len);
-        buf[len] = 0;
-
+        memcpy(buffer, text, (size_t)length);
+        buffer[length] = 0;
         UISegSet(&row[0], COLOR_FRAME, "%*s", indent, "");
-        UISegSet(&row[1], color, "%s", buf);
+        UISegSet(&row[1], color, "%s", buffer);
         UIBoxRow(2, row);
-
-        text += len;
+        text += length;
         while (*text == ' ') {
             text++;
         }
     }
 }
 
-static void UISegCell(SEG *seg, BOOL attempted, BOOL ok, DWORD err) {
+static void UISegCell(SEG *segment, BOOL attempted, DWORD error) {
     char body[32];
     char cell[sizeof(body) + CELL_W];
-    size_t bodyLen;
-    int cols;
-    int pad;
+    size_t bodyLength;
+    int columns;
+    int padding;
     WORD color;
 
     if (!attempted) {
         snprintf(body, sizeof(body), "-");
         color = COLOR_FRAME;
-    } else if (ok) {
+    } else if (error == ERROR_SUCCESS) {
         snprintf(body, sizeof(body), "OK");
         color = COLOR_OK_BG;
-    } else if (err == ERROR_NOT_VERIFIED) {
-        /* our own code: "not applied" reads better than 536870913 */
+    } else if (error == ERROR_NOT_VERIFIED) {
         snprintf(body, sizeof(body), "✗nv");
         color = COLOR_FAIL_BG;
     } else {
-        snprintf(body, sizeof(body), "✗%lu", (unsigned long)err);
+        snprintf(body, sizeof(body), "✗%lu", (unsigned long)error);
         if (UIUtf8Len(body) > CELL_W) {
             snprintf(body, sizeof(body), "✗");
         }
         color = COLOR_FAIL_BG;
     }
-
-    /* %-*s pads by bytes, so a multi-byte glyph would leave the cell short
-       of CELL_W display columns and shift every following column; pad by
-       column count instead. */
-    cols = UIUtf8Len(body);
-    if (cols > CELL_W) {
-        cols = CELL_W;
+    columns = UIUtf8Len(body);
+    if (columns > CELL_W) {
+        columns = CELL_W;
     }
-    pad = CELL_W - cols;
-    bodyLen = strlen(body);
-
-    memcpy(cell, body, bodyLen);
-    memset(cell + bodyLen, ' ', (size_t)pad);
-    cell[bodyLen + (size_t)pad] = 0;
-
-    UISegSet(seg, color, "%s", cell);
+    padding = CELL_W - columns;
+    bodyLength = strlen(body);
+    memcpy(cell, body, bodyLength);
+    memset(cell + bodyLength, ' ', (size_t)padding);
+    cell[bodyLength + (size_t)padding] = 0;
+    UISegSet(segment, color, "%s", cell);
 }
 
-static void UIAddNote(char *buf, size_t size, size_t *pos, const char *fmt, ...) {
+static void UIAddNote(char *buffer, size_t size, size_t *position, const char *format, ...) {
     va_list args;
     int written;
 
-    if (*pos >= size - 1) {
+    if (*position >= size - 1) {
         return;
     }
-
-    va_start(args, fmt);
-    written = vsnprintf(buf + *pos, size - *pos, fmt, args);
+    va_start(args, format);
+    written = vsnprintf(buffer + *position, size - *position, format, args);
     va_end(args);
-
     if (written > 0) {
-        *pos += (size_t)written;
-        if (*pos >= size - 1) {
-            *pos = size - 1;
+        *position += (size_t)written;
+        if (*position >= size - 1) {
+            *position = size - 1;
         }
     }
 }
 
-void UIReportProcess(int index, const TARGET *target, const PROCESS_RESULT *r) {
-    SEG row[3 + STEP_COUNT * 2];
-    int n = 0;
-    int i;
-
-    UISegSet(&row[n++], COLOR_HEAD, "%2d  ", index);
-    UISegSet(&row[n++], COLOR_WHITE, "%-*ls", NAME_W, target->name);
-    UISegSet(&row[n++], COLOR_WARN, " %5lu  ", (unsigned long)target->pid);
-
-    for (i = 0; i < STEP_COUNT; i++) {
-        if (i) {
-            UISegSet(&row[n++], COLOR_FRAME, " ");
-        }
-        UISegCell(&row[n++], r->opened && r->attempted[i], r->ok[i], r->err[i]);
+static void UIAddStepError(
+    char *note,
+    size_t size,
+    size_t *position,
+    int step,
+    const PROCESS_RESULT *result
+) {
+    if (step == STEP_THR) {
+        UIAddNote(note, size, position, "thr %d/%d", result->thrSet, result->thrTotal);
+    } else if (step == STEP_IO && result->ioThreadFailed) {
+        UIAddNote(note, size, position, "io %d/%d", result->ioThrSet, result->ioThrTotal);
+    } else if (result->err[step] == ERROR_NOT_VERIFIED) {
+        UIAddNote(note, size, position, "%s:nv", kStepShort[step]);
+        return;
+    } else {
+        UIAddNote(
+            note,
+            size,
+            position,
+            "%s:%lu(%s)",
+            kStepShort[step],
+            (unsigned long)result->err[step],
+            UIShortReason(result->err[step]));
+        return;
     }
+    if (result->err[step] == ERROR_NOT_VERIFIED) {
+        UIAddNote(note, size, position, "(nv)");
+    } else {
+        UIAddNote(note, size, position, "(err %lu)", (unsigned long)result->err[step]);
+    }
+}
 
-    UIBoxRow(n, row);
+void UIReportProcess(int index, const TARGET *target, const PROCESS_RESULT *result) {
+    SEG row[3 + STEP_COUNT * 2];
+    int count = 0;
+    int step;
 
-    if (!r->opened) {
+    UISegSet(&row[count++], COLOR_HEAD, "%2d  ", index);
+    UISegSet(&row[count++], COLOR_WHITE, "%-*ls", NAME_W, target->name);
+    UISegSet(&row[count++], COLOR_WARN, " %5lu  ", (unsigned long)target->pid);
+    for (step = 0; step < STEP_COUNT; step++) {
+        if (step) {
+            UISegSet(&row[count++], COLOR_FRAME, " ");
+        }
+        UISegCell(&row[count++], result->attempted[step], result->err[step]);
+    }
+    UIBoxRow(count, row);
+
+    if (!result->opened) {
         char note[256];
-
-        snprintf(
-            note, sizeof(note),
-            "open:%lu(%s)",
-            (unsigned long)r->openErr, UIShortReason(r->openErr));
+        snprintf(note, sizeof(note), "open:%lu(%s)", (unsigned long)result->openErr, UIShortReason(result->openErr));
         UIBoxWrap(COLOR_WARN, note);
         return;
     }
-
-    if (r->okCount < r->attemptCount) {
+    if (result->capSkipped || ResultState(result) != RESULT_FULL) {
         char note[512] = "";
-        size_t pos = 0;
+        size_t position = 0;
 
-        for (i = 0; i < STEP_COUNT; i++) {
-            if (!r->attempted[i] || r->ok[i]) {
-                continue;
-            }
-
-            if (pos) {
-                UIAddNote(note, sizeof(note), &pos, " · ");
-            }
-
-            if (i == STEP_THR) {
-                UIAddNote(note, sizeof(note), &pos, "thr %d/%d", r->thrSet, r->thrTotal);
-                if (r->err[i] == ERROR_NOT_VERIFIED) {
-                    UIAddNote(note, sizeof(note), &pos, "(nv)");
-                } else {
-                    UIAddNote(note, sizeof(note), &pos, "(err %lu)", (unsigned long)r->err[i]);
-                }
-            } else if (i == STEP_IO && r->ioThreadsFailed) {
-                UIAddNote(note, sizeof(note), &pos, "io %d/%d", r->ioThrSet, r->ioThrTotal);
-                if (r->err[i] == ERROR_NOT_VERIFIED) {
-                    UIAddNote(note, sizeof(note), &pos, "(nv)");
-                } else {
-                    UIAddNote(note, sizeof(note), &pos, "(err %lu)", (unsigned long)r->err[i]);
-                }
-            } else if (r->err[i] == ERROR_NOT_VERIFIED) {
-                UIAddNote(note, sizeof(note), &pos, "%s:nv", kStepShort[i]);
+        if (result->capSkipped) {
+            if (result->capSkipErr == ERROR_ACCESS_DENIED) {
+                UIAddNote(note, sizeof(note), &position, "cap skipped(insufficient rights)");
+            } else if (result->capSkipErr == ERROR_JOB_CONFLICT) {
+                UIAddNote(note, sizeof(note), &position, "cap skipped(existing job)");
             } else {
-                UIAddNote(
-                    note, sizeof(note), &pos,
-                    "%s:%lu(%s)",
-                    kStepShort[i], (unsigned long)r->err[i], UIShortReason(r->err[i]));
+                UIAddNote(note, sizeof(note), &position, "cap skipped(not verified)");
             }
         }
-
+        for (step = 0; step < STEP_COUNT; step++) {
+            if (!result->attempted[step] || RESULT_OK(result, step)) {
+                continue;
+            }
+            if (position) {
+                UIAddNote(note, sizeof(note), &position, " · ");
+            }
+            UIAddStepError(note, sizeof(note), &position, step, result);
+        }
         UIBoxWrap(COLOR_WARN, note);
     }
 }

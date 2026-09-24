@@ -1,90 +1,9 @@
 #include "limiter.h"
 #include "config.h"
 
-/* ------------------------------------------------------------------ */
-/* Dynamic NTDLL function resolution                                  */
-/* ------------------------------------------------------------------ */
-
-typedef LONG (NTAPI *PFN_NtSetInformationProcess)(HANDLE, ULONG, PVOID, ULONG);
-typedef LONG (NTAPI *PFN_NtQueryInformationProcess)(HANDLE, ULONG, PVOID, ULONG, PULONG);
-typedef LONG (NTAPI *PFN_NtSetInformationThread)(HANDLE, ULONG, PVOID, ULONG);
-typedef LONG (NTAPI *PFN_NtQueryInformationThread)(HANDLE, ULONG, PVOID, ULONG, PULONG);
-
-static PFN_NtSetInformationProcess LoadNtSetInformationProcess(void) {
-    static PFN_NtSetInformationProcess fn = NULL;
-    static BOOL tried = FALSE;
-    HMODULE ntdll;
-
-    if (!tried) {
-        tried = TRUE;
-        ntdll = GetModuleHandleW(L"ntdll.dll");
-
-        if (ntdll) {
-            fn = (PFN_NtSetInformationProcess)(void *)GetProcAddress(
-                ntdll, "NtSetInformationProcess");
-        }
-    }
-
-    return fn;
+static DWORD NtError(NTSTATUS status) {
+    return (DWORD)RtlNtStatusToDosError(status);
 }
-
-static PFN_NtQueryInformationProcess LoadNtQueryInformationProcess(void) {
-    static PFN_NtQueryInformationProcess fn = NULL;
-    static BOOL tried = FALSE;
-    HMODULE ntdll;
-
-    if (!tried) {
-        tried = TRUE;
-        ntdll = GetModuleHandleW(L"ntdll.dll");
-
-        if (ntdll) {
-            fn = (PFN_NtQueryInformationProcess)(void *)GetProcAddress(
-                ntdll, "NtQueryInformationProcess");
-        }
-    }
-
-    return fn;
-}
-
-static PFN_NtSetInformationThread LoadNtSetInformationThread(void) {
-    static PFN_NtSetInformationThread fn = NULL;
-    static BOOL tried = FALSE;
-    HMODULE ntdll;
-
-    if (!tried) {
-        tried = TRUE;
-        ntdll = GetModuleHandleW(L"ntdll.dll");
-
-        if (ntdll) {
-            fn = (PFN_NtSetInformationThread)(void *)GetProcAddress(
-                ntdll, "NtSetInformationThread");
-        }
-    }
-
-    return fn;
-}
-
-static PFN_NtQueryInformationThread LoadNtQueryInformationThread(void) {
-    static PFN_NtQueryInformationThread fn = NULL;
-    static BOOL tried = FALSE;
-    HMODULE ntdll;
-
-    if (!tried) {
-        tried = TRUE;
-        ntdll = GetModuleHandleW(L"ntdll.dll");
-
-        if (ntdll) {
-            fn = (PFN_NtQueryInformationThread)(void *)GetProcAddress(
-                ntdll, "NtQueryInformationThread");
-        }
-    }
-
-    return fn;
-}
-
-/* ------------------------------------------------------------------ */
-/* Privileges & System Info                                           */
-/* ------------------------------------------------------------------ */
 
 BOOL LimiterIsRunAsAdmin(void) {
     BOOL isAdmin = FALSE;
@@ -92,54 +11,39 @@ BOOL LimiterIsRunAsAdmin(void) {
     SID_IDENTIFIER_AUTHORITY ntAuthority = SECURITY_NT_AUTHORITY;
 
     if (AllocateAndInitializeSid(
-            &ntAuthority,
-            2,
-            SECURITY_BUILTIN_DOMAIN_RID,
-            DOMAIN_ALIAS_RID_ADMINS,
-            0, 0, 0, 0, 0, 0,
-            &adminGroup)) {
+            &ntAuthority, 2, SECURITY_BUILTIN_DOMAIN_RID,
+            DOMAIN_ALIAS_RID_ADMINS, 0, 0, 0, 0, 0, 0, &adminGroup)) {
         if (!CheckTokenMembership(NULL, adminGroup, &isAdmin)) {
             isAdmin = FALSE;
         }
         FreeSid(adminGroup);
     }
-
     return isAdmin;
 }
 
 static BOOL EnablePrivilege(LPCWSTR name, DWORD *outError) {
-    HANDLE hToken;
-    TOKEN_PRIVILEGES tp;
+    HANDLE token;
+    TOKEN_PRIVILEGES privileges;
     LUID luid;
     BOOL ok;
 
     *outError = ERROR_SUCCESS;
-
-    if (!OpenProcessToken(
-            GetCurrentProcess(),
-            TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY,
-            &hToken)) {
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &token)) {
         *outError = GetLastError();
         return FALSE;
     }
-
     if (!LookupPrivilegeValueW(NULL, name, &luid)) {
         *outError = GetLastError();
-        CloseHandle(hToken);
+        CloseHandle(token);
         return FALSE;
     }
-
-    tp.PrivilegeCount = 1;
-    tp.Privileges[0].Luid = luid;
-    tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
-
+    privileges.PrivilegeCount = 1;
+    privileges.Privileges[0].Luid = luid;
+    privileges.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
     SetLastError(ERROR_SUCCESS);
-
-    ok = AdjustTokenPrivileges(hToken, FALSE, &tp, sizeof(tp), NULL, NULL);
-
+    ok = AdjustTokenPrivileges(token, FALSE, &privileges, sizeof(privileges), NULL, NULL);
     *outError = GetLastError();
-    CloseHandle(hToken);
-
+    CloseHandle(token);
     return ok && *outError == ERROR_SUCCESS;
 }
 
@@ -147,99 +51,76 @@ BOOL LimiterEnableDebugPrivilege(DWORD *outError) {
     return EnablePrivilege(SE_DEBUG_NAME, outError);
 }
 
-/* Logical CPUs of the whole machine. A job's CpuRate is a share of the
-   machine, so the rate conversion needs this count, not the group count. */
-DWORD LimiterGetLogicalCpuCount(void) {
-    DWORD count = GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
+DWORD LimiterGetCpuCount(DWORD group) {
+    DWORD count = GetActiveProcessorCount((WORD)group);
+    SYSTEM_INFO info;
 
     if (count == 0) {
-        SYSTEM_INFO si;
-        GetSystemInfo(&si);
-        count = si.dwNumberOfProcessors;
+        GetSystemInfo(&info);
+        count = info.dwNumberOfProcessors;
     }
-
-    return count > 0 ? count : 1;
-}
-
-/* Logical CPUs of processor group 0: the group every affinity mask we can
-   build with SetProcessAffinityMask applies to. */
-DWORD LimiterGetGroupCpuCount(void) {
-    DWORD count = GetActiveProcessorCount(0);
-
-    if (count == 0) {
-        SYSTEM_INFO si;
-        GetSystemInfo(&si);
-        count = si.dwNumberOfProcessors;
-    }
-
     return count > 0 ? count : 1;
 }
 
 DWORD_PTR LimiterGetLastCpuAffinityMask(DWORD cpuCount) {
-    DWORD bitCount = (DWORD)(sizeof(DWORD_PTR) * 8);
+    DWORD bits = (DWORD)(sizeof(DWORD_PTR) * 8);
 
     if (cpuCount < 1) {
         cpuCount = 1;
     }
-
-    if (cpuCount > bitCount) {
-        cpuCount = bitCount;
+    if (cpuCount > bits) {
+        cpuCount = bits;
     }
-
     return ((DWORD_PTR)1) << (cpuCount - 1);
 }
 
-/* ------------------------------------------------------------------ */
-/* Process Discovery                                                  */
-/* ------------------------------------------------------------------ */
-
 int LimiterScanTargets(TARGET *targets, int cap, DWORD *outError, BOOL *outTruncated) {
     HANDLE snapshot;
-    PROCESSENTRY32W pe;
-    int n = 0;
+    PROCESSENTRY32W entry;
+    int count = 0;
+    DWORD error;
 
-    *outError = 0;
+    *outError = ERROR_SUCCESS;
     *outTruncated = FALSE;
-
     snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-
     if (snapshot == INVALID_HANDLE_VALUE) {
         *outError = GetLastError();
         return -1;
     }
-
-    memset(&pe, 0, sizeof(pe));
-    pe.dwSize = sizeof(pe);
-
-    if (!Process32FirstW(snapshot, &pe)) {
-        *outError = GetLastError();
+    memset(&entry, 0, sizeof(entry));
+    entry.dwSize = sizeof(entry);
+    if (!Process32FirstW(snapshot, &entry)) {
+        error = GetLastError();
         CloseHandle(snapshot);
+        if (error == ERROR_NO_MORE_FILES) {
+            return 0;
+        }
+        *outError = error;
         return -1;
     }
-
     do {
-        if (!ConfigIsTargetProcess(pe.szExeFile)) {
+        if (!ConfigIsTargetProcess(entry.szExeFile)) {
             continue;
         }
-        if (n < cap) {
-            targets[n].pid = pe.th32ProcessID;
-            wcsncpy(targets[n].name, pe.szExeFile, TARGET_NAME_MAX - 1);
-            targets[n].name[TARGET_NAME_MAX - 1] = 0;
-            n++;
+        if (count < cap) {
+            targets[count].pid = entry.th32ProcessID;
+            wcsncpy(targets[count].name, entry.szExeFile, TARGET_NAME_MAX - 1);
+            targets[count].name[TARGET_NAME_MAX - 1] = 0;
+            count++;
         } else {
             *outTruncated = TRUE;
         }
-    } while (Process32NextW(snapshot, &pe));
-
+    } while (Process32NextW(snapshot, &entry));
+    error = GetLastError();
     CloseHandle(snapshot);
-    return n;
+    if (error != ERROR_NO_MORE_FILES) {
+        *outError = error;
+        return -1;
+    }
+    return count;
 }
 
-/* ------------------------------------------------------------------ */
-/* Process Tweaks: EcoQoS, I/O, Memory, CPU Cap, Threads              */
-/* ------------------------------------------------------------------ */
-
-static BOOL EnableEfficiencyMode(HANDLE hProcess, DWORD *outError) {
+static BOOL SetEfficiencyMode(HANDLE process, DWORD *outError) {
     PROCESS_POWER_THROTTLING_STATE state = {
         PROCESS_POWER_THROTTLING_CURRENT_VERSION,
         PROCESS_POWER_THROTTLING_EXECUTION_SPEED,
@@ -248,113 +129,63 @@ static BOOL EnableEfficiencyMode(HANDLE hProcess, DWORD *outError) {
     PROCESS_POWER_THROTTLING_STATE check;
 
     *outError = ERROR_SUCCESS;
-
-    if (!SetProcessInformation(
-            hProcess,
-            PIC_POWER_THROTTLING,
-            &state,
-            sizeof(state))) {
+    if (!SetProcessInformation(process, ProcessPowerThrottling, &state, sizeof(state))) {
         *outError = GetLastError();
         return FALSE;
     }
-
-    /* A read-back that fails is not a pass: we could not confirm anything. */
-    if (!GetProcessInformation(
-            hProcess,
-            PIC_POWER_THROTTLING,
-            &check,
-            sizeof(check))) {
+    if (!GetProcessInformation(process, ProcessPowerThrottling, &check, sizeof(check)) ||
+        !(check.StateMask & PROCESS_POWER_THROTTLING_EXECUTION_SPEED)) {
         *outError = ERROR_NOT_VERIFIED;
         return FALSE;
     }
-
-    if (!(check.StateMask & PROCESS_POWER_THROTTLING_EXECUTION_SPEED)) {
-        *outError = ERROR_NOT_VERIFIED;
-        return FALSE;
-    }
-
     return TRUE;
 }
 
-/* I/O priority has no Win32 API; it is set and read back through
-   NtSetInformationProcess / NtQueryInformationProcess with
-   ProcessIoPriority (PROCESSINFOCLASS 0x21). */
-static BOOL SetVeryLowIoPriority(HANDLE hProcess, DWORD *outError) {
-    PFN_NtSetInformationProcess setFn = LoadNtSetInformationProcess();
-    PFN_NtQueryInformationProcess queryFn = LoadNtQueryInformationProcess();
-    ULONG hint = IO_PRIORITY_VERY_LOW;
+static BOOL SetVeryLowIoPriority(HANDLE handle, BOOL thread, DWORD *outError) {
+    ULONG value = 0;
     ULONG check = 0;
-    LONG status;
+    NTSTATUS status;
 
     *outError = ERROR_SUCCESS;
-
-    if (!setFn) {
-        *outError = ERROR_NOT_SUPPORTED;
-        return FALSE;
-    }
-
-    status = setFn(hProcess, NT_PROCESS_IO_PRIORITY, &hint, sizeof(hint));
-
+    status = thread
+        ? NtSetInformationThread(handle, (THREADINFOCLASS)0x16, &value, sizeof(value))
+        : NtSetInformationProcess(handle, ProcessIoPriority, &value, sizeof(value));
     if (!NT_SUCCESS(status)) {
-        *outError = (DWORD)status;
+        *outError = NtError(status);
         return FALSE;
     }
-
-    if (!queryFn) {
-        *outError = ERROR_NOT_SUPPORTED;
-        return FALSE;
-    }
-
-    status = queryFn(hProcess, NT_PROCESS_IO_PRIORITY, &check, sizeof(check), NULL);
-
+    status = thread
+        ? NtQueryInformationThread(handle, (THREADINFOCLASS)0x16, &check, sizeof(check), NULL)
+        : NtQueryInformationProcess(handle, ProcessIoPriority, &check, sizeof(check), NULL);
     if (!NT_SUCCESS(status)) {
+        *outError = NtError(status);
+        return FALSE;
+    }
+    if (check != value) {
         *outError = ERROR_NOT_VERIFIED;
         return FALSE;
     }
-
-    if (check != IO_PRIORITY_VERY_LOW) {
-        *outError = ERROR_NOT_VERIFIED;
-        return FALSE;
-    }
-
     return TRUE;
 }
 
-static BOOL SetVeryLowMemoryPriority(HANDLE hProcess, DWORD *outError) {
-    MEMORY_PRIORITY_INFORMATION mp;
+static BOOL SetVeryLowMemoryPriority(HANDLE process, DWORD *outError) {
+    MEMORY_PRIORITY_INFORMATION value;
     MEMORY_PRIORITY_INFORMATION check;
 
     *outError = ERROR_SUCCESS;
-    mp.MemoryPriority = MEMORY_PRIORITY_VERY_LOW;
-
-    if (!SetProcessInformation(
-            hProcess,
-            PIC_MEMORY_PRIORITY,
-            &mp,
-            sizeof(mp))) {
+    value.MemoryPriority = MEMORY_PRIORITY_VERY_LOW;
+    if (!SetProcessInformation(process, ProcessMemoryPriority, &value, sizeof(value))) {
         *outError = GetLastError();
         return FALSE;
     }
-
-    if (!GetProcessInformation(
-            hProcess,
-            PIC_MEMORY_PRIORITY,
-            &check,
-            sizeof(check))) {
+    if (!GetProcessInformation(process, ProcessMemoryPriority, &check, sizeof(check)) ||
+        check.MemoryPriority != MEMORY_PRIORITY_VERY_LOW) {
         *outError = ERROR_NOT_VERIFIED;
         return FALSE;
     }
-
-    if (check.MemoryPriority != MEMORY_PRIORITY_VERY_LOW) {
-        *outError = ERROR_NOT_VERIFIED;
-        return FALSE;
-    }
-
     return TRUE;
 }
 
-/* A job's CpuRate is a share of the whole machine, not of one logical CPU,
-   so a per-CPU percentage has to be scaled by the processor count. */
 static DWORD CpuRateFromPercent(DWORD percent, DWORD cpuCount) {
     unsigned long long rate;
 
@@ -364,88 +195,96 @@ static DWORD CpuRateFromPercent(DWORD percent, DWORD cpuCount) {
     if (percent < 1) {
         percent = 1;
     }
-
+    if (percent > 100) {
+        percent = 100;
+    }
     rate = ((unsigned long long)percent * 100ULL) / cpuCount;
-
     if (rate < 1) {
         rate = 1;
     }
     if (rate > 10000) {
         rate = 10000;
     }
-
     return (DWORD)rate;
 }
 
-/* Hard CPU ceiling. A process cannot leave a job it did not create, so
-   unlike the other knobs this one cannot be undone by the target.
-   Needs PROCESS_SET_QUOTA | PROCESS_TERMINATE on the handle. */
-static BOOL ApplyCpuCap(HANDLE hProcess, DWORD percent, DWORD *outError) {
+static void BuildJobName(DWORD pid, const FILETIME *created, wchar_t *name, size_t size) {
+    swprintf(
+        name, size, L"Local\\fuckAce_%lu_%08lX%08lX",
+        (unsigned long)pid,
+        (unsigned long)created->dwHighDateTime,
+        (unsigned long)created->dwLowDateTime);
+}
+
+static BOOL ApplyCpuCap(HANDLE process, DWORD percent, DWORD *outError, BOOL *skipped) {
+    FILETIME created, exited, kernel, user;
+    JOBOBJECT_CPU_RATE_CONTROL_INFORMATION info;
+    JOBOBJECT_CPU_RATE_CONTROL_INFORMATION check;
     HANDLE job;
-    ACE_CPU_RATE info;
-    ACE_CPU_RATE check;
+    BOOL inAnyJob = FALSE;
+    BOOL inOurJob = FALSE;
     DWORD returned = 0;
+    wchar_t name[96];
 
     *outError = ERROR_SUCCESS;
-
-    if (percent < 1) {
-        percent = 1;
+    *skipped = FALSE;
+    if (!GetProcessTimes(process, &created, &exited, &kernel, &user)) {
+        *outError = GetLastError();
+        return FALSE;
     }
-    if (percent > 100) {
-        percent = 100;
-    }
-
-    job = CreateJobObjectW(NULL, NULL);
-
+    BuildJobName(GetProcessId(process), &created, name, sizeof(name) / sizeof(name[0]));
+    job = CreateJobObjectW(NULL, name);
     if (!job) {
         *outError = GetLastError();
         return FALSE;
     }
-
-    info.ControlFlags =
-        JOB_OBJECT_CPU_RATE_CONTROL_ENABLE | JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP;
-    info.CpuRate = CpuRateFromPercent(percent, LimiterGetLogicalCpuCount());
-
+    if (!IsProcessInJob(process, NULL, &inAnyJob)) {
+        *outError = ERROR_NOT_VERIFIED;
+        *skipped = TRUE;
+        CloseHandle(job);
+        return FALSE;
+    }
+    if (inAnyJob) {
+        if (!IsProcessInJob(process, job, &inOurJob)) {
+            *outError = ERROR_NOT_VERIFIED;
+            *skipped = TRUE;
+            CloseHandle(job);
+            return FALSE;
+        }
+        if (!inOurJob) {
+            *outError = ERROR_JOB_CONFLICT;
+            *skipped = TRUE;
+            CloseHandle(job);
+            return FALSE;
+        }
+    }
+    memset(&info, 0, sizeof(info));
+    info.ControlFlags = JOB_OBJECT_CPU_RATE_CONTROL_ENABLE | JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP;
+    info.CpuRate = CpuRateFromPercent(percent, LimiterGetCpuCount(ALL_PROCESSOR_GROUPS));
     if (!SetInformationJobObject(job, JobObjectCpuRateControlInformation, &info, sizeof(info))) {
         *outError = GetLastError();
         CloseHandle(job);
         return FALSE;
     }
-
-    if (!AssignProcessToJobObject(job, hProcess)) {
+    if (!inAnyJob && !AssignProcessToJobObject(job, process)) {
         *outError = GetLastError();
         CloseHandle(job);
         return FALSE;
     }
-
     if (!QueryInformationJobObject(
-            job,
-            JobObjectCpuRateControlInformation,
-            &check,
-            sizeof(check),
-            &returned)) {
+            job, JobObjectCpuRateControlInformation, &check, sizeof(check), &returned) ||
+        returned < sizeof(check) ||
+        (check.ControlFlags & (JOB_OBJECT_CPU_RATE_CONTROL_ENABLE | JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP)) !=
+            (JOB_OBJECT_CPU_RATE_CONTROL_ENABLE | JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP) ||
+        check.CpuRate != info.CpuRate) {
         *outError = ERROR_NOT_VERIFIED;
         CloseHandle(job);
         return FALSE;
     }
-
-    if (returned < sizeof(check) ||
-        !(check.ControlFlags & JOB_OBJECT_CPU_RATE_CONTROL_ENABLE) ||
-        !(check.ControlFlags & JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP)) {
-        *outError = ERROR_NOT_VERIFIED;
-        CloseHandle(job);
-        return FALSE;
-    }
-
-    /* Documented: the job survives while its processes run, so dropping
-       our handle keeps the cap in force without holding the process. */
     CloseHandle(job);
     return TRUE;
 }
 
-/* NtSetInformationThread(ThreadIoPriority) is documented to need
-   SeIncreaseBasePriorityPrivilege. Best effort: if it cannot be enabled the
-   per-thread set/read-back still reports the real failure. */
 static void EnsureThreadIoPrivilege(void) {
     static BOOL tried = FALSE;
     DWORD ignored;
@@ -456,355 +295,280 @@ static void EnsureThreadIoPrivilege(void) {
     }
 }
 
-/* Per-thread I/O priority has no Win32 API either: set and read back through
-   NtSetInformationThread / NtQueryInformationThread with ThreadIoPriority
-   (THREADINFOCLASS 0x16). */
-static BOOL SetVeryLowThreadIoPriority(HANDLE hThread, DWORD *outError) {
-    PFN_NtSetInformationThread setFn = LoadNtSetInformationThread();
-    PFN_NtQueryInformationThread queryFn = LoadNtQueryInformationThread();
-    ULONG hint = IO_PRIORITY_VERY_LOW;
-    ULONG check = 0;
-    LONG status;
-
-    *outError = ERROR_SUCCESS;
-
-    if (!setFn) {
-        *outError = ERROR_NOT_SUPPORTED;
-        return FALSE;
+static void KeepError(PROCESS_RESULT *result, int step, DWORD error) {
+    if (error != ERROR_SUCCESS && result->err[step] == ERROR_SUCCESS) {
+        result->err[step] = error;
     }
-
-    status = setFn(hThread, NT_THREAD_IO_PRIORITY, &hint, sizeof(hint));
-
-    if (!NT_SUCCESS(status)) {
-        *outError = (DWORD)status;
-        return FALSE;
-    }
-
-    if (!queryFn) {
-        *outError = ERROR_NOT_SUPPORTED;
-        return FALSE;
-    }
-
-    status = queryFn(hThread, NT_THREAD_IO_PRIORITY, &check, sizeof(check), NULL);
-
-    if (!NT_SUCCESS(status)) {
-        *outError = ERROR_NOT_VERIFIED;
-        return FALSE;
-    }
-
-    if (check != IO_PRIORITY_VERY_LOW) {
-        *outError = ERROR_NOT_VERIFIED;
-        return FALSE;
-    }
-
-    return TRUE;
 }
 
-typedef struct _THREAD_PASS {
-    BOOL enumerated;                    /* thread list was obtained */
-    DWORD enumErr;
-    int prioSet;                        /* threads lowered to IDLE */
-    int prioTotal;
-    DWORD prioErr;
-    int ioSet;                          /* threads lowered to VeryLow I/O */
-    int ioTotal;                        /* only threads we could open */
-    DWORD ioErr;
-} THREAD_PASS;
+static void MarkThreadFailure(PROCESS_RESULT *result, DWORD error, BOOL counted) {
+    if (counted) {
+        result->thrTotal++;
+        result->ioThrTotal++;
+    }
+    KeepError(result, STEP_THR, error);
+    if (result->err[STEP_IO] == ERROR_SUCCESS) {
+        result->err[STEP_IO] = error;
+        result->ioThreadFailed = TRUE;
+    }
+}
 
-/* SetPriorityClass only shifts the base priority of threads that are at
-   their normal value, so pin every thread explicitly and read each one
-   back. A thread's I/O priority is likewise a per-thread property, so the
-   process-wide default set earlier does not retroactively cover threads
-   that already exist — walk them here. Threads that exit mid-walk are
-   skipped, not counted as failures. Threads we cannot open are counted
-   against THR (as before) but not against IO, because they still inherit
-   the process-level I/O default. */
-static void RunThreadPass(DWORD pid, THREAD_PASS *out) {
+static void RunThreadPass(
+    const TARGET *targets,
+    const BOOL *valid,
+    PROCESS_RESULT *results,
+    int count
+) {
     HANDLE snapshot;
-    THREADENTRY32 te;
-    DWORD firstPrioErr = ERROR_SUCCESS;
-    DWORD firstIoErr = ERROR_SUCCESS;
-    BOOL prioFailed = FALSE;
-    BOOL ioFailed = FALSE;
-
-    memset(out, 0, sizeof(*out));
+    THREADENTRY32 entry;
+    DWORD error;
+    int i;
 
     EnsureThreadIoPrivilege();
-
+    for (i = 0; i < count; i++) {
+        if (valid[i]) {
+            results[i].attempted[STEP_THR] = TRUE;
+        }
+    }
     snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
-
     if (snapshot == INVALID_HANDLE_VALUE) {
-        out->enumErr = GetLastError();
+        error = GetLastError();
+        for (i = 0; i < count; i++) {
+            if (valid[i]) {
+                MarkThreadFailure(&results[i], error, FALSE);
+            }
+        }
         return;
     }
-
-    memset(&te, 0, sizeof(te));
-    te.dwSize = sizeof(te);
-
-    if (!Thread32First(snapshot, &te)) {
-        DWORD err = GetLastError();
+    memset(&entry, 0, sizeof(entry));
+    entry.dwSize = sizeof(entry);
+    if (!Thread32First(snapshot, &entry)) {
+        error = GetLastError();
         CloseHandle(snapshot);
-
-        if (err == ERROR_NO_MORE_FILES) {
-            out->enumerated = TRUE;
-            return;
-        }
-
-        out->enumErr = err;
-        return;
-    }
-
-    out->enumerated = TRUE;
-
-    do {
-        HANDLE hThread;
-        DWORD err;
-
-        if (te.th32OwnerProcessID != pid) {
-            continue;
-        }
-
-        hThread = OpenThread(
-            THREAD_SET_INFORMATION | THREAD_QUERY_LIMITED_INFORMATION,
-            FALSE, te.th32ThreadID);
-
-        if (!hThread) {
-            /* A query right may be denied where set is allowed; keep the
-               thread priority part working even then. */
-            hThread = OpenThread(THREAD_SET_INFORMATION, FALSE, te.th32ThreadID);
-        }
-
-        if (!hThread) {
-            err = GetLastError();
-            if (err == ERROR_INVALID_PARAMETER) {
-                continue;   /* thread exited between snapshot and open */
-            }
-            out->prioTotal++;
-            prioFailed = TRUE;
-            if (firstPrioErr == ERROR_SUCCESS) {
-                firstPrioErr = err;
-            }
-            continue;
-        }
-
-        out->prioTotal++;
-        out->ioTotal++;
-
-        if (!SetThreadPriority(hThread, THREAD_PRIORITY_IDLE)) {
-            prioFailed = TRUE;
-            if (firstPrioErr == ERROR_SUCCESS) {
-                firstPrioErr = GetLastError();
-            }
-        } else if (GetThreadPriority(hThread) != THREAD_PRIORITY_IDLE) {
-            prioFailed = TRUE;
-            if (firstPrioErr == ERROR_SUCCESS) {
-                firstPrioErr = ERROR_NOT_VERIFIED;
-            }
-        } else {
-            out->prioSet++;
-        }
-
-        {
-            DWORD ioErr = ERROR_SUCCESS;
-
-            if (SetVeryLowThreadIoPriority(hThread, &ioErr)) {
-                out->ioSet++;
-            } else {
-                ioFailed = TRUE;
-                if (firstIoErr == ERROR_SUCCESS) {
-                    firstIoErr = ioErr;
+        if (error != ERROR_NO_MORE_FILES) {
+            for (i = 0; i < count; i++) {
+                if (valid[i]) {
+                    MarkThreadFailure(&results[i], error, FALSE);
                 }
             }
         }
-
-        CloseHandle(hThread);
-    } while (Thread32Next(snapshot, &te));
-
-    CloseHandle(snapshot);
-
-    if (prioFailed) {
-        out->prioErr = firstPrioErr;
+        return;
     }
-    if (ioFailed) {
-        out->ioErr = firstIoErr;
+    do {
+        HANDLE thread;
+        DWORD actualPid;
+        int index = -1;
+
+        for (i = 0; i < count; i++) {
+            if (valid[i] && targets[i].pid == entry.th32OwnerProcessID) {
+                index = i;
+                break;
+            }
+        }
+        if (index < 0) {
+            continue;
+        }
+        thread = OpenThread(
+            THREAD_SET_INFORMATION | THREAD_QUERY_LIMITED_INFORMATION,
+            FALSE,
+            entry.th32ThreadID);
+        if (!thread) {
+            error = GetLastError();
+            if (error == ERROR_INVALID_PARAMETER) {
+                continue;
+            }
+            MarkThreadFailure(&results[index], error, TRUE);
+            continue;
+        }
+        actualPid = GetProcessIdOfThread(thread);
+        if (actualPid == 0) {
+            error = GetLastError();
+            CloseHandle(thread);
+            if (error == ERROR_INVALID_PARAMETER) {
+                continue;
+            }
+            MarkThreadFailure(&results[index], error, TRUE);
+            continue;
+        }
+        if (actualPid != targets[index].pid) {
+            CloseHandle(thread);
+            continue;
+        }
+        results[index].thrTotal++;
+        results[index].ioThrTotal++;
+        if (!SetThreadPriority(thread, THREAD_PRIORITY_IDLE)) {
+            KeepError(&results[index], STEP_THR, GetLastError());
+        } else if (GetThreadPriority(thread) != THREAD_PRIORITY_IDLE) {
+            KeepError(&results[index], STEP_THR, ERROR_NOT_VERIFIED);
+        } else {
+            results[index].thrSet++;
+        }
+        {
+            DWORD ioError = ERROR_SUCCESS;
+            if (SetVeryLowIoPriority(thread, TRUE, &ioError)) {
+                results[index].ioThrSet++;
+            } else {
+                results[index].ioThreadFailed = TRUE;
+                KeepError(&results[index], STEP_IO, ioError);
+            }
+        }
+        CloseHandle(thread);
+    } while (Thread32Next(snapshot, &entry));
+    error = GetLastError();
+    CloseHandle(snapshot);
+    if (error != ERROR_NO_MORE_FILES) {
+        for (i = 0; i < count; i++) {
+            if (valid[i]) {
+                MarkThreadFailure(&results[i], error, FALSE);
+            }
+        }
     }
 }
 
 static HANDLE OpenTargetProcess(DWORD pid, DWORD *outRights, DWORD *outError) {
-    static const DWORD kFullRights =
+    static const DWORD fullRights =
         PROCESS_SET_INFORMATION | PROCESS_SET_QUOTA | PROCESS_TERMINATE |
         PROCESS_QUERY_LIMITED_INFORMATION;
-    static const DWORD kBasicRights =
+    static const DWORD basicRights =
         PROCESS_SET_INFORMATION | PROCESS_QUERY_LIMITED_INFORMATION;
-    DWORD firstErr = ERROR_SUCCESS;
-    HANDLE hProcess;
+    HANDLE process;
+    DWORD firstError;
 
     *outRights = 0;
     *outError = ERROR_SUCCESS;
-
-    hProcess = OpenProcess(kFullRights, FALSE, pid);
-    if (hProcess) {
-        *outRights = kFullRights;
-        return hProcess;
+    process = OpenProcess(fullRights, FALSE, pid);
+    if (process) {
+        *outRights = fullRights;
+        return process;
     }
-    firstErr = GetLastError();
-
-    hProcess = OpenProcess(kBasicRights, FALSE, pid);
-    if (hProcess) {
-        *outRights = kBasicRights;
-        return hProcess;
+    firstError = GetLastError();
+    process = OpenProcess(basicRights, FALSE, pid);
+    if (process) {
+        *outRights = basicRights;
+        return process;
     }
-
-    hProcess = OpenProcess(PROCESS_SET_INFORMATION, FALSE, pid);
-    if (hProcess) {
-        *outRights = PROCESS_SET_INFORMATION;
-        return hProcess;
-    }
-
-    *outError = firstErr;
+    *outError = firstError;
     return NULL;
 }
 
-/* Guards against a pid that was recycled between scan and open. If the
-   name cannot be read we assume the handle is still the right process. */
-static BOOL VerifyTargetName(HANDLE hProcess, const wchar_t *expected) {
+static int VerifyTargetName(HANDLE process, const wchar_t *expected, DWORD *outError) {
     wchar_t path[MAX_PATH];
-    DWORD len = MAX_PATH;
+    DWORD length = MAX_PATH;
     const wchar_t *base;
 
-    if (!QueryFullProcessImageNameW(hProcess, 0, path, &len)) {
-        return TRUE;
+    *outError = ERROR_SUCCESS;
+    if (!QueryFullProcessImageNameW(process, 0, path, &length)) {
+        *outError = GetLastError();
+        return -1;
     }
-
     base = wcsrchr(path, L'\\');
     base = base ? base + 1 : path;
-
-    return _wcsicmp(base, expected) == 0;
+    if (_wcsicmp(base, expected) != 0) {
+        *outError = ERROR_INVALID_NAME;
+        return 0;
+    }
+    return 1;
 }
 
-PROCESS_RESULT LimiterApplySettings(
-    DWORD pid,
-    const wchar_t *expectedName,
+void LimiterApplyBatch(
+    const TARGET *targets,
+    int count,
     DWORD_PTR affinityMask,
-    DWORD cpuCapPercent
+    DWORD cpuCapPercent,
+    PROCESS_RESULT *results
 ) {
-    PROCESS_RESULT r;
-    HANDLE hProcess;
-    DWORD rights = 0;
-    DWORD openErr = 0;
-    BOOL haveJobRights;
-    BOOL procIoOk;
+    HANDLE processes[MAX_TARGETS];
+    DWORD rights[MAX_TARGETS];
+    BOOL valid[MAX_TARGETS];
     int i;
 
-    memset(&r, 0, sizeof(r));
-
-    hProcess = OpenTargetProcess(pid, &rights, &openErr);
-
-    if (!hProcess) {
-        r.openErr = openErr;
-        return r;
+    if (count > MAX_TARGETS) {
+        count = MAX_TARGETS;
     }
-
-    r.opened = TRUE;
-
-    if (!VerifyTargetName(hProcess, expectedName)) {
-        r.stale = TRUE;
-        CloseHandle(hProcess);
-        return r;
+    if (count <= 0) {
+        return;
     }
+    memset(results, 0, sizeof(PROCESS_RESULT) * (size_t)count);
+    memset(processes, 0, sizeof(processes));
+    memset(valid, 0, sizeof(valid));
+    for (i = 0; i < count; i++) {
+        int identity;
+        DWORD error = ERROR_SUCCESS;
 
-    haveJobRights = (rights & PROCESS_SET_QUOTA) && (rights & PROCESS_TERMINATE);
+        processes[i] = OpenTargetProcess(targets[i].pid, &rights[i], &error);
+        if (!processes[i]) {
+            results[i].openErr = error;
+            continue;
+        }
+        results[i].opened = TRUE;
+        identity = VerifyTargetName(processes[i], targets[i].name, &error);
+        if (identity == 0) {
+            results[i].stale = TRUE;
+            CloseHandle(processes[i]);
+            processes[i] = NULL;
+            continue;
+        }
+        if (identity < 0) {
+            results[i].opened = FALSE;
+            results[i].openErr = error;
+            CloseHandle(processes[i]);
+            processes[i] = NULL;
+            continue;
+        }
+        valid[i] = TRUE;
+        results[i].attempted[STEP_PRI] = TRUE;
+        if (!SetPriorityClass(processes[i], IDLE_PRIORITY_CLASS)) {
+            results[i].err[STEP_PRI] = GetLastError();
+        } else if (GetPriorityClass(processes[i]) != IDLE_PRIORITY_CLASS) {
+            results[i].err[STEP_PRI] = ERROR_NOT_VERIFIED;
+        }
 
-    r.attempted[STEP_PRI] = TRUE;
-    if (SetPriorityClass(hProcess, IDLE_PRIORITY_CLASS)) {
-        if (GetPriorityClass(hProcess) == IDLE_PRIORITY_CLASS) {
-            r.ok[STEP_PRI] = TRUE;
+        results[i].attempted[STEP_AFF] = TRUE;
+        if (!SetProcessAffinityMask(processes[i], affinityMask)) {
+            results[i].err[STEP_AFF] = GetLastError();
         } else {
-            r.err[STEP_PRI] = ERROR_NOT_VERIFIED;
-        }
-    } else {
-        r.err[STEP_PRI] = GetLastError();
-    }
-
-    r.attempted[STEP_AFF] = TRUE;
-    if (SetProcessAffinityMask(hProcess, affinityMask)) {
-        DWORD_PTR procMask = 0;
-        DWORD_PTR sysMask = 0;
-
-        if (GetProcessAffinityMask(hProcess, &procMask, &sysMask) &&
-            procMask != affinityMask) {
-            r.err[STEP_AFF] = ERROR_NOT_VERIFIED;
-        } else {
-            r.ok[STEP_AFF] = TRUE;
-        }
-    } else {
-        r.err[STEP_AFF] = GetLastError();
-    }
-
-    r.attempted[STEP_ECO] = TRUE;
-    if (!EnableEfficiencyMode(hProcess, &r.err[STEP_ECO])) {
-        r.ok[STEP_ECO] = FALSE;
-    } else {
-        r.ok[STEP_ECO] = TRUE;
-    }
-
-    if (cpuCapPercent > 0 && haveJobRights) {
-        r.attempted[STEP_CAP] = TRUE;
-        if (ApplyCpuCap(hProcess, cpuCapPercent, &r.err[STEP_CAP])) {
-            r.ok[STEP_CAP] = TRUE;
-        }
-    }
-
-    r.attempted[STEP_IO] = TRUE;
-    procIoOk = SetVeryLowIoPriority(hProcess, &r.err[STEP_IO]);
-    if (procIoOk) {
-        r.ok[STEP_IO] = TRUE;
-    }
-
-    r.attempted[STEP_MEM] = TRUE;
-    if (SetVeryLowMemoryPriority(hProcess, &r.err[STEP_MEM])) {
-        r.ok[STEP_MEM] = TRUE;
-    }
-
-    CloseHandle(hProcess);
-
-    {
-        THREAD_PASS tp;
-
-        RunThreadPass(pid, &tp);
-
-        r.attempted[STEP_THR] = TRUE;
-        r.thrSet = tp.prioSet;
-        r.thrTotal = tp.prioTotal;
-
-        if (tp.enumerated && tp.prioErr == ERROR_SUCCESS) {
-            r.ok[STEP_THR] = TRUE;
-        } else {
-            r.err[STEP_THR] = tp.enumerated ? tp.prioErr : tp.enumErr;
-        }
-
-        /* The IO step is process-wide plus per-thread; it only counts as
-           applied when the process-level set stuck and every thread we could
-           reach also took the setting. If the thread list itself could not
-           be obtained, fall back to the process-level verdict. */
-        r.ioThrSet = tp.ioSet;
-        r.ioThrTotal = tp.ioTotal;
-
-        if (procIoOk && tp.enumerated && tp.ioErr != ERROR_SUCCESS) {
-            r.ok[STEP_IO] = FALSE;
-            r.err[STEP_IO] = tp.ioErr;
-            r.ioThreadsFailed = TRUE;
-        }
-    }
-
-    for (i = 0; i < STEP_COUNT; i++) {
-        if (r.attempted[i]) {
-            r.attemptCount++;
-            if (r.ok[i]) {
-                r.okCount++;
+            DWORD_PTR processMask = 0;
+            DWORD_PTR systemMask = 0;
+            if (!GetProcessAffinityMask(processes[i], &processMask, &systemMask) ||
+                processMask != affinityMask) {
+                results[i].err[STEP_AFF] = ERROR_NOT_VERIFIED;
             }
         }
-    }
 
-    return r;
+        results[i].attempted[STEP_ECO] = TRUE;
+        SetEfficiencyMode(processes[i], &results[i].err[STEP_ECO]);
+
+        if (cpuCapPercent > 0) {
+            if ((rights[i] & (PROCESS_SET_QUOTA | PROCESS_TERMINATE)) !=
+                (PROCESS_SET_QUOTA | PROCESS_TERMINATE)) {
+                results[i].capSkipped = TRUE;
+                results[i].capSkipErr = ERROR_ACCESS_DENIED;
+            } else {
+                BOOL skipped = FALSE;
+                results[i].attempted[STEP_CAP] = TRUE;
+                if (!ApplyCpuCap(
+                        processes[i], cpuCapPercent,
+                        &results[i].err[STEP_CAP], &skipped)) {
+                    if (skipped) {
+                        results[i].attempted[STEP_CAP] = FALSE;
+                        results[i].capSkipped = TRUE;
+                        results[i].capSkipErr = results[i].err[STEP_CAP];
+                        results[i].err[STEP_CAP] = ERROR_SUCCESS;
+                    }
+                }
+            }
+        }
+
+        results[i].attempted[STEP_IO] = TRUE;
+        SetVeryLowIoPriority(processes[i], FALSE, &results[i].err[STEP_IO]);
+
+        results[i].attempted[STEP_MEM] = TRUE;
+        SetVeryLowMemoryPriority(processes[i], &results[i].err[STEP_MEM]);
+    }
+    RunThreadPass(targets, valid, results, count);
+    for (i = 0; i < count; i++) {
+        if (processes[i]) {
+            CloseHandle(processes[i]);
+        }
+    }
 }

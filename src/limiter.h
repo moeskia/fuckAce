@@ -5,15 +5,15 @@
 
 BOOL LimiterIsRunAsAdmin(void);
 BOOL LimiterEnableDebugPrivilege(DWORD *outError);
-DWORD LimiterGetLogicalCpuCount(void);
-DWORD LimiterGetGroupCpuCount(void);
+DWORD LimiterGetCpuCount(DWORD group);
 DWORD_PTR LimiterGetLastCpuAffinityMask(DWORD cpuCount);
 int LimiterScanTargets(TARGET *targets, int cap, DWORD *outError, BOOL *outTruncated);
-PROCESS_RESULT LimiterApplySettings(
-    DWORD pid,
-    const wchar_t *expectedName,
+void LimiterApplyBatch(
+    const TARGET *targets,
+    int count,
     DWORD_PTR affinityMask,
-    DWORD cpuCapPercent
+    DWORD cpuCapPercent,
+    PROCESS_RESULT *results
 );
 
-#endif /* LIMITER_H */
+#endif

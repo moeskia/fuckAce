@@ -4,18 +4,14 @@
 #define _WIN32_WINNT 0x0A00
 
 #include <windows.h>
+#include <winternl.h>
 #include <tlhelp32.h>
 #include <stdio.h>
 #include <wchar.h>
 #include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
-#include <errno.h>
 #include <conio.h>
-
-/* ------------------------------------------------------------------ */
-/* forward-compatibility shims for older headers                       */
-/* ------------------------------------------------------------------ */
 
 #ifndef PROCESS_POWER_THROTTLING_CURRENT_VERSION
 #define PROCESS_POWER_THROTTLING_CURRENT_VERSION 1
@@ -31,8 +27,6 @@ typedef struct _PROCESS_POWER_THROTTLING_STATE {
 #define MEMORY_PRIORITY_VERY_LOW 1
 #endif
 
-/* The SDK calls it SE_INCREASE_BASE_PRIORITY_NAME, MinGW
-   SE_INC_BASE_PRIORITY_NAME. */
 #ifndef SE_INCREASE_BASE_PRIORITY_NAME
 #ifdef SE_INC_BASE_PRIORITY_NAME
 #define SE_INCREASE_BASE_PRIORITY_NAME SE_INC_BASE_PRIORITY_NAME
@@ -47,43 +41,19 @@ typedef struct _PROCESS_POWER_THROTTLING_STATE {
 #define JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP 0x4
 #endif
 
-/* PROCESS_INFORMATION_CLASS values, kept as explicit casts so the code
-   does not depend on the SDK enum being present. */
-#define PIC_MEMORY_PRIORITY  ((PROCESS_INFORMATION_CLASS)0)
-#define PIC_POWER_THROTTLING ((PROCESS_INFORMATION_CLASS)4)
-
-/* NtSetInformationProcess(ProcessIoPriority); PROCESSINFOCLASS 0x21 */
-#define NT_PROCESS_IO_PRIORITY 0x21
-/* NtSetInformationThread(ThreadIoPriority); THREADINFOCLASS 0x16.
-   Setting needs THREAD_SET_INFORMATION, the read-back needs
-   THREAD_QUERY_LIMITED_INFORMATION, and the set is documented to require
-   SeIncreaseBasePriorityPrivilege. */
-#define NT_THREAD_IO_PRIORITY 0x16
-#define IO_PRIORITY_VERY_LOW 0
-#define NT_SUCCESS(status) ((LONG)(status) >= 0)
-
 #ifndef THREAD_QUERY_LIMITED_INFORMATION
 #define THREAD_QUERY_LIMITED_INFORMATION 0x0800
 #endif
 
-/* Layout-compatible with JOBOBJECT_CPU_RATE_CONTROL_INFORMATION. */
-typedef struct _ACE_CPU_RATE {
-    DWORD ControlFlags;
-    DWORD CpuRate;
-} ACE_CPU_RATE;
-
-/* our own code: the API reported success but the state did not stick */
 #define ERROR_NOT_VERIFIED 0x20000001
+#define ERROR_JOB_CONFLICT 0x20000002
 
-/* priority, affinity, ecoqos, cpu cap, io, memory, threads */
 #define STEP_COUNT 7
 #define MAX_TARGETS 256
 #define MAX_TARGET_NAMES 32
 #define RETRY_SECONDS 5
 #define EXIT_SECONDS 10
 #define DEFAULT_CPU_CAP 3
-
-/* buffer size for a target image name, terminator included */
 #define TARGET_NAME_MAX 32
 
 enum {
@@ -96,6 +66,12 @@ enum {
     STEP_THR
 };
 
+enum {
+    RESULT_FAILED = 0,
+    RESULT_PARTIAL,
+    RESULT_FULL
+};
+
 extern const char *const kStepHead[STEP_COUNT];
 extern const char *const kStepShort[STEP_COUNT];
 
@@ -106,18 +82,45 @@ typedef struct _TARGET {
 
 typedef struct _PROCESS_RESULT {
     BOOL opened;
-    BOOL stale;                         /* pid was recycled: not a target */
+    BOOL stale;
     DWORD openErr;
     BOOL attempted[STEP_COUNT];
-    BOOL ok[STEP_COUNT];
     DWORD err[STEP_COUNT];
-    int attemptCount;
-    int okCount;
     int thrSet;
     int thrTotal;
-    int ioThrSet;                       /* threads whose I/O priority stuck */
-    int ioThrTotal;                     /* threads the I/O priority was tried on */
-    BOOL ioThreadsFailed;               /* IO failed on the per-thread part */
+    int ioThrSet;
+    int ioThrTotal;
+    BOOL ioThreadFailed;
+    BOOL capSkipped;
+    DWORD capSkipErr;
 } PROCESS_RESULT;
 
-#endif /* COMMON_H */
+#define RESULT_OK(result, step) ((result)->attempted[step] && (result)->err[step] == ERROR_SUCCESS)
+
+
+static inline int ResultState(const PROCESS_RESULT *result) {
+    int attempted = 0;
+    int succeeded = 0;
+    int step;
+
+    for (step = 0; step < STEP_COUNT; step++) {
+        attempted += result->attempted[step] != FALSE;
+        succeeded += RESULT_OK(result, step);
+    }
+    if (attempted > 0 && attempted == succeeded) {
+        return RESULT_FULL;
+    }
+    return succeeded > 0 ? RESULT_PARTIAL : RESULT_FAILED;
+}
+
+static inline int SummaryExitCode(int found, int full, int partial) {
+    if (found <= 0) {
+        return 1;
+    }
+    if (found == full) {
+        return 0;
+    }
+    return full > 0 || partial > 0 ? 2 : 3;
+}
+
+#endif

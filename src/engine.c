@@ -1,16 +1,15 @@
 #include "engine.h"
-#include "common.h"
 #include "config.h"
 #include "limiter.h"
 #include "ui.h"
 
-static void TallyError(DWORD err, int *denied, int *unsupported, int *other) {
-    if (err == ERROR_SUCCESS) {
+static void TallyError(DWORD error, int *denied, int *unsupported, int *other) {
+    if (error == ERROR_SUCCESS) {
         return;
     }
-    if (err == ERROR_ACCESS_DENIED) {
+    if (error == ERROR_ACCESS_DENIED) {
         (*denied)++;
-    } else if (err == ERROR_NOT_SUPPORTED) {
+    } else if (error == ERROR_NOT_SUPPORTED) {
         (*unsupported)++;
     } else {
         (*other)++;
@@ -18,20 +17,22 @@ static void TallyError(DWORD err, int *denied, int *unsupported, int *other) {
 }
 
 int EngineRunOnce(BOOL isFirst) {
-    ULONGLONG t0 = GetTickCount64();
+    ULONGLONG started = GetTickCount64();
     static TARGET targets[MAX_TARGETS];
-    DWORD scanErr = 0;
+    PROCESS_RESULT results[MAX_TARGETS];
+    DWORD scanError = ERROR_SUCCESS;
+    DWORD debugError = ERROR_SUCCESS;
+    BOOL debugOk;
     BOOL truncated = FALSE;
-    int targetCount;
-    DWORD dbgErr = ERROR_SUCCESS;
-    BOOL dbgOk;
     DWORD cpuCount;
     DWORD groupCpus;
-    DWORD_PTR affinityMask;
     DWORD groups;
+    DWORD_PTR affinity;
+    int targetCount;
     int i;
-    int s;
+    int step;
 
+    UIResetTiming();
     if (!LimiterIsRunAsAdmin()) {
         if (isFirst) {
             UIClearScreen();
@@ -45,84 +46,73 @@ int EngineRunOnce(BOOL isFirst) {
         return 1;
     }
 
-    dbgOk = LimiterEnableDebugPrivilege(&dbgErr);
-
-    targetCount = LimiterScanTargets(targets, MAX_TARGETS, &scanErr, &truncated);
-
+    debugOk = LimiterEnableDebugPrivilege(&debugError);
+    targetCount = LimiterScanTargets(targets, MAX_TARGETS, &scanError, &truncated);
     if (isFirst) {
         UIClearScreen();
     }
-    /* One row per target plus a possible note, so budget three lines each;
-       the layout only clamps this against the largest window the console
-       will give us. */
     UILayoutConsole(17 + 3 * (targetCount > 0 ? targetCount : 0));
     UIResetCursor();
 
-    cpuCount = LimiterGetLogicalCpuCount();
-    groupCpus = LimiterGetGroupCpuCount();
-    affinityMask = LimiterGetLastCpuAffinityMask(groupCpus);
+    cpuCount = LimiterGetCpuCount(ALL_PROCESSOR_GROUPS);
+    groupCpus = LimiterGetCpuCount(0);
     groups = GetActiveProcessorGroupCount();
+    affinity = LimiterGetLastCpuAffinityMask(groupCpus);
 
     UIBoxRule("┌", "┐");
     UIBoxLine(COLOR_TITLE, " fuckAce · SGuard64 / SGuardSvc64 limiter");
-
     {
         SEG status[14];
-        int n = 0;
+        int count = 0;
 
-        UISegSet(&status[n++], COLOR_OK_BG, " ✓ admin");
-        UISegSet(&status[n++], COLOR_HEAD, " · ");
-        if (dbgOk) {
-            UISegSet(&status[n++], COLOR_OK_BG, "✓ SeDebugPrivilege");
+        UISegSet(&status[count++], COLOR_OK_BG, " ✓ admin");
+        UISegSet(&status[count++], COLOR_HEAD, " · ");
+        if (debugOk) {
+            UISegSet(&status[count++], COLOR_OK_BG, "✓ SeDebugPrivilege");
         } else {
-            UISegSet(&status[n++], COLOR_WARN_BG, "! SeDebugPrivilege(%lu)",
-                     (unsigned long)dbgErr);
+            UISegSet(&status[count++], COLOR_WARN_BG, "! SeDebugPrivilege(%lu)", (unsigned long)debugError);
         }
-        UISegSet(&status[n++], COLOR_HEAD, " · ");
-        UISegSet(&status[n++], COLOR_WHITE, "%lu CPUs", (unsigned long)cpuCount);
-        UISegSet(&status[n++], COLOR_HEAD, " → CPU ");
-        UISegSet(&status[n++], COLOR_WHITE, "%lu", (unsigned long)(groupCpus - 1));
-        UISegSet(&status[n++], COLOR_HEAD, " · cap ");
+        UISegSet(&status[count++], COLOR_HEAD, " · ");
+        UISegSet(&status[count++], COLOR_WHITE, "%lu CPUs", (unsigned long)cpuCount);
+        UISegSet(&status[count++], COLOR_HEAD, " → CPU ");
+        UISegSet(&status[count++], COLOR_WHITE, "%lu", (unsigned long)(groupCpus - 1));
+        UISegSet(&status[count++], COLOR_HEAD, " · cap ");
         if (g_config.cpuCapPercent > 0) {
-            UISegSet(&status[n++], COLOR_WARN, "%lu%%/CPU", (unsigned long)g_config.cpuCapPercent);
+            UISegSet(&status[count++], COLOR_WARN, "%lu%%/CPU", (unsigned long)g_config.cpuCapPercent);
         } else {
-            UISegSet(&status[n++], COLOR_FRAME, "off");
+            UISegSet(&status[count++], COLOR_FRAME, "off");
         }
-        UIBoxRow(n, status);
+        UIBoxRow(count, status);
     }
-
     if (targetCount < 0) {
         UIBoxRule("├", "┤");
-        UIBoxLine(COLOR_FAIL_BG, " ✗ process scan failed (Error=%lu)", (unsigned long)scanErr);
+        UIBoxLine(COLOR_FAIL_BG, " ✗ process scan failed (Error=%lu)", (unsigned long)scanError);
         UIBoxRule("└", "┘");
         UIClearToEnd();
         return 1;
     }
-
     if (groups > 1) {
-        UIBoxLine(COLOR_WARN, " ! %lu processor groups — affinity targets group 0",
-                 (unsigned long)groups);
+        UIBoxLine(COLOR_WARN, " ! %lu processor groups — affinity targets group 0", (unsigned long)groups);
     }
     if (truncated) {
-        UIBoxLine(COLOR_WARN, " ! more than %d targets found — extra processes skipped",
-                 MAX_TARGETS);
+        UIBoxLine(COLOR_WARN, " ! more than %d targets found — extra processes skipped", MAX_TARGETS);
     }
-
     UIBoxRule("├", "┤");
-
     {
-        SEG head[3 + STEP_COUNT * 2];
-        int n = 0;
+        SEG header[3 + STEP_COUNT * 2];
+        int count = 0;
 
-        UISegSet(&head[n++], COLOR_HEAD, "%2s  %-*s %5s  ", "#", NAME_W, "PROCESS", "PID");
-        for (s = 0; s < STEP_COUNT; s++) {
-            if (s) {
-                UISegSet(&head[n++], COLOR_HEAD, " ");
+        UISegSet(&header[count++], COLOR_HEAD, "%2s  %-*s %5s  ", "#", NAME_W, "PROCESS", "PID");
+        for (step = 0; step < STEP_COUNT; step++) {
+            if (step) {
+                UISegSet(&header[count++], COLOR_HEAD, " ");
             }
-            UISegSet(&head[n++], COLOR_HEAD, "%-*s", CELL_W, kStepHead[s]);
+            UISegSet(&header[count++], COLOR_HEAD, "%-*s", CELL_W, kStepHead[step]);
         }
-        UIBoxRow(n, head);
+        UIBoxRow(count, header);
     }
+
+    LimiterApplyBatch(targets, targetCount, affinity, g_config.cpuCapPercent, results);
     {
         int foundCount = 0;
         int skippedCount = 0;
@@ -133,47 +123,50 @@ int EngineRunOnce(BOOL isFirst) {
         int applied[STEP_COUNT];
         int deniedCount = 0;
         int unsupportedCount = 0;
-        int otherErrCount = 0;
-        int existingJobCount = 0;
+        int otherErrorCount = 0;
+        int capRightsSkipped = 0;
+        int capJobSkipped = 0;
+        int capOtherSkipped = 0;
         int exitCode;
 
         memset(applied, 0, sizeof(applied));
-
         for (i = 0; i < targetCount; i++) {
-            PROCESS_RESULT r = LimiterApplySettings(
-                targets[i].pid, targets[i].name, affinityMask, g_config.cpuCapPercent);
+            PROCESS_RESULT *result = &results[i];
+            int state;
 
-            if (r.stale) {
+            if (result->stale) {
                 skippedCount++;
                 continue;
             }
-
             foundCount++;
-            UIReportProcess(foundCount, &targets[i], &r);
-
-            if (r.opened) {
+            UIReportProcess(foundCount, &targets[i], result);
+            if (result->opened) {
                 openedCount++;
+            } else {
+                TallyError(result->openErr, &deniedCount, &unsupportedCount, &otherErrorCount);
             }
-
-            TallyError(r.openErr, &deniedCount, &unsupportedCount, &otherErrCount);
-
-            for (s = 0; s < STEP_COUNT; s++) {
-                if (!r.attempted[s]) {
+            for (step = 0; step < STEP_COUNT; step++) {
+                if (!result->attempted[step]) {
                     continue;
                 }
-                TallyError(r.err[s], &deniedCount, &unsupportedCount, &otherErrCount);
-                if (r.ok[s]) {
-                    applied[s]++;
+                TallyError(result->err[step], &deniedCount, &unsupportedCount, &otherErrorCount);
+                if (RESULT_OK(result, step)) {
+                    applied[step]++;
                 }
             }
-
-            if (g_config.cpuCapPercent > 0 && r.opened && !r.attempted[STEP_CAP]) {
-                existingJobCount++;
+            if (result->capSkipped) {
+                if (result->capSkipErr == ERROR_ACCESS_DENIED) {
+                    capRightsSkipped++;
+                } else if (result->capSkipErr == ERROR_JOB_CONFLICT) {
+                    capJobSkipped++;
+                } else {
+                    capOtherSkipped++;
+                }
             }
-
-            if (r.opened && r.okCount == r.attemptCount) {
+            state = ResultState(result);
+            if (state == RESULT_FULL) {
                 fullCount++;
-            } else if (r.opened && r.okCount > 0) {
+            } else if (state == RESULT_PARTIAL) {
                 partialCount++;
             } else {
                 failedCount++;
@@ -181,153 +174,140 @@ int EngineRunOnce(BOOL isFirst) {
         }
 
         UIBoxRule("├", "┤");
-
         {
-            SEG sum[12];
-            int k = 0;
+            SEG summary[12];
+            int count = 0;
 
-            UISegSet(&sum[k++], COLOR_HEAD, " found ");
-            UISegSet(&sum[k++], COLOR_WHITE, "%d", foundCount);
-            UISegSet(&sum[k++], COLOR_HEAD, " · full ");
-            UISegSet(&sum[k++], COLOR_OK, "%d", fullCount);
-            UISegSet(&sum[k++], COLOR_HEAD, " · partial ");
-            UISegSet(&sum[k++], COLOR_WARN, "%d", partialCount);
-            UISegSet(&sum[k++], COLOR_HEAD, " · failed ");
-            UISegSet(&sum[k++], COLOR_FAIL, "%d", failedCount);
-            UIBoxRow(k, sum);
+            UISegSet(&summary[count++], COLOR_HEAD, " found ");
+            UISegSet(&summary[count++], COLOR_WHITE, "%d", foundCount);
+            UISegSet(&summary[count++], COLOR_HEAD, " · full ");
+            UISegSet(&summary[count++], COLOR_OK, "%d", fullCount);
+            UISegSet(&summary[count++], COLOR_HEAD, " · partial ");
+            UISegSet(&summary[count++], COLOR_WARN, "%d", partialCount);
+            UISegSet(&summary[count++], COLOR_HEAD, " · failed ");
+            UISegSet(&summary[count++], COLOR_FAIL, "%d", failedCount);
+            UIBoxRow(count, summary);
         }
-
         if (foundCount > 0) {
-            SEG ap[3 * STEP_COUNT + 4];
-            int a = 0;
+            SEG appliedSegments[3 * STEP_COUNT + 4];
+            int count = 0;
 
-            UISegSet(&ap[a++], COLOR_HEAD, " applied ");
-            for (s = 0; s < STEP_COUNT; s++) {
-                if (s) {
-                    UISegSet(&ap[a++], COLOR_HEAD, " · ");
+            UISegSet(&appliedSegments[count++], COLOR_HEAD, " applied ");
+            for (step = 0; step < STEP_COUNT; step++) {
+                if (step) {
+                    UISegSet(&appliedSegments[count++], COLOR_HEAD, " · ");
                 }
-                UISegSet(&ap[a++], COLOR_HEAD, "%s ", kStepShort[s]);
-                UISegSet(&ap[a++], applied[s] ? COLOR_OK : COLOR_FAIL, "%d", applied[s]);
+                UISegSet(&appliedSegments[count++], COLOR_HEAD, "%s ", kStepShort[step]);
+                UISegSet(
+                    &appliedSegments[count++],
+                    applied[step] ? COLOR_OK : COLOR_FAIL,
+                    "%d",
+                    applied[step]);
             }
-            UIBoxRow(a, ap);
-
-            UIBoxLine(COLOR_HEAD, "          opened %d/%d · cpu cap %d · io: proc+threads · eco/mem: proc",
-                      openedCount, foundCount, applied[STEP_CAP]);
-
-            if (existingJobCount > 0) {
-                UIBoxLine(COLOR_WARN,
-                          "          %d process(es) lacked quota rights — CPU cap skipped",
-                          existingJobCount);
+            UIBoxRow(count, appliedSegments);
+            UIBoxLine(
+                COLOR_HEAD,
+                "          opened %d/%d · cpu cap %d · io: proc+threads · eco/mem: proc",
+                openedCount,
+                foundCount,
+                applied[STEP_CAP]);
+            if (capRightsSkipped > 0) {
+                UIBoxLine(COLOR_WARN, "          %d CPU cap skipped — insufficient quota rights", capRightsSkipped);
             }
-
+            if (capJobSkipped > 0) {
+                UIBoxLine(COLOR_WARN, "          %d CPU cap skipped — process already in another job", capJobSkipped);
+            }
+            if (capOtherSkipped > 0) {
+                UIBoxLine(COLOR_WARN, "          %d CPU cap skipped — job membership not verified", capOtherSkipped);
+            }
             if (skippedCount > 0) {
-                UIBoxLine(COLOR_WARN,
-                          "          %d pid(s) recycled before they could be configured — skipped",
-                          skippedCount);
+                UIBoxLine(COLOR_WARN, "          %d pid(s) recycled before they could be configured — skipped", skippedCount);
             }
-
-            if (deniedCount == 0 && unsupportedCount == 0 && otherErrCount == 0) {
-                UIBoxLine(COLOR_OK, " diagnostics  no errors — every attempted operation stuck");
+            if (deniedCount == 0 && unsupportedCount == 0 && otherErrorCount == 0) {
+                UIBoxLine(COLOR_OK, " diagnostics  no errors — attempted operations verified");
             } else {
-                SEG diag[8];
-                int d = 0;
+                SEG diagnostics[8];
+                int diagnosticCount = 0;
 
-                UISegSet(&diag[d++], COLOR_HEAD, " diagnostics ");
+                UISegSet(&diagnostics[diagnosticCount++], COLOR_HEAD, " diagnostics ");
                 if (deniedCount > 0) {
-                    UISegSet(&diag[d++], COLOR_FAIL, " access-denied %d", deniedCount);
+                    UISegSet(&diagnostics[diagnosticCount++], COLOR_FAIL, " access-denied %d", deniedCount);
                 }
                 if (unsupportedCount > 0) {
-                    UISegSet(&diag[d++], COLOR_WARN, "%sunsupported %d",
-                             deniedCount > 0 ? " · " : " ", unsupportedCount);
+                    UISegSet(&diagnostics[diagnosticCount++], COLOR_WARN, "%sunsupported %d", deniedCount > 0 ? " · " : " ", unsupportedCount);
                 }
-                if (otherErrCount > 0) {
-                    UISegSet(&diag[d++], COLOR_WARN, "%sother %d",
-                             (deniedCount > 0 || unsupportedCount > 0) ? " · " : " ",
-                             otherErrCount);
+                if (otherErrorCount > 0) {
+                    UISegSet(
+                        &diagnostics[diagnosticCount++],
+                        COLOR_WARN,
+                        "%sother %d",
+                        deniedCount > 0 || unsupportedCount > 0 ? " · " : " ",
+                        otherErrorCount);
                 }
-                UIBoxRow(d, diag);
+                UIBoxRow(diagnosticCount, diagnostics);
             }
         }
 
-        if (foundCount == 0) {
+        exitCode = SummaryExitCode(foundCount, fullCount, partialCount);
+        if (exitCode == 1) {
             UIBoxLine(COLOR_FAIL_BG, " ✗ FAILED - no target process found");
-            exitCode = 1;
-        } else if (fullCount == foundCount) {
-            UIBoxLine(COLOR_OK_BG, " ✓ SUCCESS - all %d processes fully configured", foundCount);
-            exitCode = 0;
-        } else if (fullCount > 0 || partialCount > 0) {
-            UIBoxLine(COLOR_WARN_BG, " ! PARTIAL - %d of %d processes fully configured",
-                     fullCount, foundCount);
-            exitCode = 2;
+        } else if (exitCode == 0) {
+            UIBoxLine(COLOR_OK_BG, " ✓ SUCCESS - all attempted settings verified on %d processes", foundCount);
+        } else if (exitCode == 2) {
+            UIBoxLine(COLOR_WARN_BG, " ! PARTIAL - %d of %d processes fully configured", fullCount, foundCount);
         } else {
-            UIBoxLine(COLOR_FAIL_BG, " ✗ FAILED - found %d processes but no setting applied",
-                     foundCount);
+            UIBoxLine(COLOR_FAIL_BG, " ✗ FAILED - found %d processes but no setting applied", foundCount);
             UIBoxLine(COLOR_FAIL_BG, "   access denied, protected process, or unsupported operation");
-            exitCode = 3;
         }
 
         {
             char machine[MAX_COMPUTERNAME_LENGTH + 2];
-            DWORD machineLen = sizeof(machine);
+            DWORD machineLength = sizeof(machine);
 
-            if (!GetComputerNameA(machine, &machineLen)) {
+            if (!GetComputerNameA(machine, &machineLength)) {
                 machine[0] = 0;
             }
-
             UIBoxRule("├", "┤");
-
             if (foundCount > 0) {
-                SEG tgt[16];
-                wchar_t uniq[8][TARGET_NAME_MAX];
-                int counts[8];
-                int u = 0;
-                int t = 0;
+                SEG targetSegments[16];
+                int counts[MAX_TARGET_NAMES];
+                int segmentCount = 0;
+                int uniqueCount = 0;
+                int shown = 0;
                 int j;
-                int shown;
 
+                memset(counts, 0, sizeof(counts));
                 for (i = 0; i < targetCount; i++) {
-                    int hit = -1;
-
-                    for (j = 0; j < u; j++) {
-                        if (_wcsicmp(uniq[j], targets[i].name) == 0) {
-                            hit = j;
-                            break;
+                    for (j = 0; j < g_config.targetNameCount; j++) {
+                        if (_wcsicmp(targets[i].name, g_config.targetNames[j]) == 0) {
+                            counts[j]++;
                         }
                     }
-                    if (hit < 0) {
-                        if (u >= 8) {
-                            continue;
-                        }
-                        hit = u;
-                        wcsncpy(uniq[u], targets[i].name, TARGET_NAME_MAX - 1);
-                        uniq[u][TARGET_NAME_MAX - 1] = 0;
-                        counts[u] = 0;
-                        u++;
+                }
+                for (j = 0; j < g_config.targetNameCount; j++) {
+                    uniqueCount += counts[j] > 0;
+                }
+                UISegSet(&targetSegments[segmentCount++], COLOR_HEAD, " targets ");
+                for (j = 0; j < g_config.targetNameCount && shown < 4; j++) {
+                    if (counts[j] == 0) {
+                        continue;
                     }
-                    counts[hit]++;
-                }
-
-                UISegSet(&tgt[t++], COLOR_HEAD, " targets ");
-                shown = u > 4 ? 4 : u;
-                for (j = 0; j < shown; j++) {
-                    if (j) {
-                        UISegSet(&tgt[t++], COLOR_HEAD, " · ");
+                    if (shown) {
+                        UISegSet(&targetSegments[segmentCount++], COLOR_HEAD, " · ");
                     }
-                    UISegSet(&tgt[t++], COLOR_WHITE, "%ls", uniq[j]);
-                    UISegSet(&tgt[t++], COLOR_WARN, " ×%d", counts[j]);
+                    UISegSet(&targetSegments[segmentCount++], COLOR_WHITE, "%ls", g_config.targetNames[j]);
+                    UISegSet(&targetSegments[segmentCount++], COLOR_WARN, " ×%d", counts[j]);
+                    shown++;
                 }
-                if (u > shown) {
-                    UISegSet(&tgt[t++], COLOR_HEAD, " · …+%d", u - shown);
+                if (uniqueCount > shown) {
+                    UISegSet(&targetSegments[segmentCount++], COLOR_HEAD, " · …+%d", uniqueCount - shown);
                 }
-                UIBoxRow(t, tgt);
+                UIBoxRow(segmentCount, targetSegments);
             }
-
-            UIDrawTiming(GetTickCount64() - t0, machine);
+            UIDrawTiming(GetTickCount64() - started, machine);
         }
-
         UIBoxRule("└", "┘");
         UIClearToEnd();
-
         return exitCode;
     }
 }

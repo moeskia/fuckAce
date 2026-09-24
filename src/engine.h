@@ -5,4 +5,4 @@
 
 int EngineRunOnce(BOOL isFirst);
 
-#endif /* ENGINE_H */
+#endif

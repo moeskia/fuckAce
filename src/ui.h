@@ -10,17 +10,11 @@
 #define COLOR_OK      (FOREGROUND_GREEN | FOREGROUND_INTENSITY)
 #define COLOR_FAIL    (FOREGROUND_RED | FOREGROUND_INTENSITY)
 #define COLOR_WARN    (FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_INTENSITY)
-
-#define COLOR_TITLE   (BACKGROUND_BLUE | BACKGROUND_INTENSITY | \
-                       FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE | FOREGROUND_INTENSITY)
+#define COLOR_TITLE   (BACKGROUND_BLUE | BACKGROUND_INTENSITY | FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE | FOREGROUND_INTENSITY)
 #define COLOR_OK_BG   (BACKGROUND_GREEN | BACKGROUND_INTENSITY)
-#define COLOR_FAIL_BG (BACKGROUND_RED | BACKGROUND_INTENSITY | \
-                       FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE | FOREGROUND_INTENSITY)
+#define COLOR_FAIL_BG (BACKGROUND_RED | BACKGROUND_INTENSITY | FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE | FOREGROUND_INTENSITY)
 #define COLOR_WARN_BG (BACKGROUND_RED | BACKGROUND_GREEN | BACKGROUND_INTENSITY)
 
-/* Total box width in columns. The widest row is the results table: 4 columns
-   of index/name/pid framing plus 7 six-column cells needs 79, so 81 leaves a
-   little slack. */
 #define CONTENT_WIDTH 81
 #define CELL_W 6
 #define NAME_W 15
@@ -36,12 +30,13 @@ void UIClearScreen(void);
 void UIResetCursor(void);
 void UIClearToEnd(void);
 void UILayoutConsole(int contentRows);
-SEG *UISegSet(SEG *seg, WORD color, const char *fmt, ...);
+void UIResetTiming(void);
+SEG *UISegSet(SEG *segment, WORD color, const char *format, ...);
 void UIBoxRule(const char *left, const char *right);
-void UIBoxRow(int count, const SEG *segs);
-void UIBoxLine(WORD color, const char *fmt, ...);
-void UIReportProcess(int index, const TARGET *target, const PROCESS_RESULT *r);
+void UIBoxRow(int count, const SEG *segments);
+void UIBoxLine(WORD color, const char *format, ...);
+void UIReportProcess(int index, const TARGET *target, const PROCESS_RESULT *result);
 void UIDrawTiming(ULONGLONG elapsedMs, const char *machine);
 int UICountdown(const char *label, const char *hint, int seconds);
 
-#endif /* UI_H */
+#endif

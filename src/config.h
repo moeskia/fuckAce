@@ -16,4 +16,4 @@ BOOL ConfigAddTarget(const wchar_t *name);
 BOOL ConfigIsTargetProcess(const wchar_t *name);
 BOOL ConfigParseArgs(int argc, wchar_t **argv);
 
-#endif /* CONFIG_H */
+#endif
