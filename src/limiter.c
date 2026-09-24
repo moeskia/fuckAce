@@ -7,6 +7,8 @@
 
 typedef LONG (NTAPI *PFN_NtSetInformationProcess)(HANDLE, ULONG, PVOID, ULONG);
 typedef LONG (NTAPI *PFN_NtQueryInformationProcess)(HANDLE, ULONG, PVOID, ULONG, PULONG);
+typedef LONG (NTAPI *PFN_NtSetInformationThread)(HANDLE, ULONG, PVOID, ULONG);
+typedef LONG (NTAPI *PFN_NtQueryInformationThread)(HANDLE, ULONG, PVOID, ULONG, PULONG);
 
 static PFN_NtSetInformationProcess LoadNtSetInformationProcess(void) {
     static PFN_NtSetInformationProcess fn = NULL;
@@ -44,6 +46,42 @@ static PFN_NtQueryInformationProcess LoadNtQueryInformationProcess(void) {
     return fn;
 }
 
+static PFN_NtSetInformationThread LoadNtSetInformationThread(void) {
+    static PFN_NtSetInformationThread fn = NULL;
+    static BOOL tried = FALSE;
+    HMODULE ntdll;
+
+    if (!tried) {
+        tried = TRUE;
+        ntdll = GetModuleHandleW(L"ntdll.dll");
+
+        if (ntdll) {
+            fn = (PFN_NtSetInformationThread)(void *)GetProcAddress(
+                ntdll, "NtSetInformationThread");
+        }
+    }
+
+    return fn;
+}
+
+static PFN_NtQueryInformationThread LoadNtQueryInformationThread(void) {
+    static PFN_NtQueryInformationThread fn = NULL;
+    static BOOL tried = FALSE;
+    HMODULE ntdll;
+
+    if (!tried) {
+        tried = TRUE;
+        ntdll = GetModuleHandleW(L"ntdll.dll");
+
+        if (ntdll) {
+            fn = (PFN_NtQueryInformationThread)(void *)GetProcAddress(
+                ntdll, "NtQueryInformationThread");
+        }
+    }
+
+    return fn;
+}
+
 /* ------------------------------------------------------------------ */
 /* Privileges & System Info                                           */
 /* ------------------------------------------------------------------ */
@@ -69,7 +107,7 @@ BOOL LimiterIsRunAsAdmin(void) {
     return isAdmin;
 }
 
-BOOL LimiterEnableDebugPrivilege(DWORD *outError) {
+static BOOL EnablePrivilege(LPCWSTR name, DWORD *outError) {
     HANDLE hToken;
     TOKEN_PRIVILEGES tp;
     LUID luid;
@@ -85,7 +123,7 @@ BOOL LimiterEnableDebugPrivilege(DWORD *outError) {
         return FALSE;
     }
 
-    if (!LookupPrivilegeValueW(NULL, SE_DEBUG_NAME, &luid)) {
+    if (!LookupPrivilegeValueW(NULL, name, &luid)) {
         *outError = GetLastError();
         CloseHandle(hToken);
         return FALSE;
@@ -103,6 +141,10 @@ BOOL LimiterEnableDebugPrivilege(DWORD *outError) {
     CloseHandle(hToken);
 
     return ok && *outError == ERROR_SUCCESS;
+}
+
+BOOL LimiterEnableDebugPrivilege(DWORD *outError) {
+    return EnablePrivilege(SE_DEBUG_NAME, outError);
 }
 
 /* Logical CPUs of the whole machine. A job's CpuRate is a share of the
@@ -401,26 +443,99 @@ static BOOL ApplyCpuCap(HANDLE hProcess, DWORD percent, DWORD *outError) {
     return TRUE;
 }
 
-/* SetPriorityClass only shifts the base priority of threads that are at
-   their normal value, so pin every thread explicitly and read each one
-   back. Threads that exit mid-walk are skipped, not counted as failures. */
-static BOOL IdleThreads(DWORD pid, int *setCount, int *totalCount, DWORD *outError) {
-    HANDLE snapshot;
-    THREADENTRY32 te;
-    int total = 0;
-    int done = 0;
-    int failed = 0;
-    DWORD firstErr = ERROR_SUCCESS;
+/* NtSetInformationThread(ThreadIoPriority) is documented to need
+   SeIncreaseBasePriorityPrivilege. Best effort: if it cannot be enabled the
+   per-thread set/read-back still reports the real failure. */
+static void EnsureThreadIoPrivilege(void) {
+    static BOOL tried = FALSE;
+    DWORD ignored;
+
+    if (!tried) {
+        tried = TRUE;
+        EnablePrivilege(SE_INCREASE_BASE_PRIORITY_NAME, &ignored);
+    }
+}
+
+/* Per-thread I/O priority has no Win32 API either: set and read back through
+   NtSetInformationThread / NtQueryInformationThread with ThreadIoPriority
+   (THREADINFOCLASS 0x16). */
+static BOOL SetVeryLowThreadIoPriority(HANDLE hThread, DWORD *outError) {
+    PFN_NtSetInformationThread setFn = LoadNtSetInformationThread();
+    PFN_NtQueryInformationThread queryFn = LoadNtQueryInformationThread();
+    ULONG hint = IO_PRIORITY_VERY_LOW;
+    ULONG check = 0;
+    LONG status;
 
     *outError = ERROR_SUCCESS;
-    *setCount = 0;
-    *totalCount = 0;
+
+    if (!setFn) {
+        *outError = ERROR_NOT_SUPPORTED;
+        return FALSE;
+    }
+
+    status = setFn(hThread, NT_THREAD_IO_PRIORITY, &hint, sizeof(hint));
+
+    if (!NT_SUCCESS(status)) {
+        *outError = (DWORD)status;
+        return FALSE;
+    }
+
+    if (!queryFn) {
+        *outError = ERROR_NOT_SUPPORTED;
+        return FALSE;
+    }
+
+    status = queryFn(hThread, NT_THREAD_IO_PRIORITY, &check, sizeof(check), NULL);
+
+    if (!NT_SUCCESS(status)) {
+        *outError = ERROR_NOT_VERIFIED;
+        return FALSE;
+    }
+
+    if (check != IO_PRIORITY_VERY_LOW) {
+        *outError = ERROR_NOT_VERIFIED;
+        return FALSE;
+    }
+
+    return TRUE;
+}
+
+typedef struct _THREAD_PASS {
+    BOOL enumerated;                    /* thread list was obtained */
+    DWORD enumErr;
+    int prioSet;                        /* threads lowered to IDLE */
+    int prioTotal;
+    DWORD prioErr;
+    int ioSet;                          /* threads lowered to VeryLow I/O */
+    int ioTotal;                        /* only threads we could open */
+    DWORD ioErr;
+} THREAD_PASS;
+
+/* SetPriorityClass only shifts the base priority of threads that are at
+   their normal value, so pin every thread explicitly and read each one
+   back. A thread's I/O priority is likewise a per-thread property, so the
+   process-wide default set earlier does not retroactively cover threads
+   that already exist — walk them here. Threads that exit mid-walk are
+   skipped, not counted as failures. Threads we cannot open are counted
+   against THR (as before) but not against IO, because they still inherit
+   the process-level I/O default. */
+static void RunThreadPass(DWORD pid, THREAD_PASS *out) {
+    HANDLE snapshot;
+    THREADENTRY32 te;
+    DWORD firstPrioErr = ERROR_SUCCESS;
+    DWORD firstIoErr = ERROR_SUCCESS;
+    BOOL prioFailed = FALSE;
+    BOOL ioFailed = FALSE;
+
+    memset(out, 0, sizeof(*out));
+
+    EnsureThreadIoPrivilege();
 
     snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
 
     if (snapshot == INVALID_HANDLE_VALUE) {
-        *outError = GetLastError();
-        return FALSE;
+        out->enumErr = GetLastError();
+        return;
     }
 
     memset(&te, 0, sizeof(te));
@@ -431,12 +546,15 @@ static BOOL IdleThreads(DWORD pid, int *setCount, int *totalCount, DWORD *outErr
         CloseHandle(snapshot);
 
         if (err == ERROR_NO_MORE_FILES) {
-            return TRUE;
+            out->enumerated = TRUE;
+            return;
         }
 
-        *outError = err;
-        return FALSE;
+        out->enumErr = err;
+        return;
     }
+
+    out->enumerated = TRUE;
 
     do {
         HANDLE hThread;
@@ -446,35 +564,57 @@ static BOOL IdleThreads(DWORD pid, int *setCount, int *totalCount, DWORD *outErr
             continue;
         }
 
-        hThread = OpenThread(THREAD_SET_INFORMATION, FALSE, te.th32ThreadID);
+        hThread = OpenThread(
+            THREAD_SET_INFORMATION | THREAD_QUERY_LIMITED_INFORMATION,
+            FALSE, te.th32ThreadID);
+
+        if (!hThread) {
+            /* A query right may be denied where set is allowed; keep the
+               thread priority part working even then. */
+            hThread = OpenThread(THREAD_SET_INFORMATION, FALSE, te.th32ThreadID);
+        }
 
         if (!hThread) {
             err = GetLastError();
             if (err == ERROR_INVALID_PARAMETER) {
                 continue;   /* thread exited between snapshot and open */
             }
-            total++;
-            failed++;
-            if (firstErr == ERROR_SUCCESS) {
-                firstErr = err;
+            out->prioTotal++;
+            prioFailed = TRUE;
+            if (firstPrioErr == ERROR_SUCCESS) {
+                firstPrioErr = err;
             }
             continue;
         }
 
-        total++;
+        out->prioTotal++;
+        out->ioTotal++;
 
         if (!SetThreadPriority(hThread, THREAD_PRIORITY_IDLE)) {
-            failed++;
-            if (firstErr == ERROR_SUCCESS) {
-                firstErr = GetLastError();
+            prioFailed = TRUE;
+            if (firstPrioErr == ERROR_SUCCESS) {
+                firstPrioErr = GetLastError();
             }
         } else if (GetThreadPriority(hThread) != THREAD_PRIORITY_IDLE) {
-            failed++;
-            if (firstErr == ERROR_SUCCESS) {
-                firstErr = ERROR_NOT_VERIFIED;
+            prioFailed = TRUE;
+            if (firstPrioErr == ERROR_SUCCESS) {
+                firstPrioErr = ERROR_NOT_VERIFIED;
             }
         } else {
-            done++;
+            out->prioSet++;
+        }
+
+        {
+            DWORD ioErr = ERROR_SUCCESS;
+
+            if (SetVeryLowThreadIoPriority(hThread, &ioErr)) {
+                out->ioSet++;
+            } else {
+                ioFailed = TRUE;
+                if (firstIoErr == ERROR_SUCCESS) {
+                    firstIoErr = ioErr;
+                }
+            }
         }
 
         CloseHandle(hThread);
@@ -482,15 +622,12 @@ static BOOL IdleThreads(DWORD pid, int *setCount, int *totalCount, DWORD *outErr
 
     CloseHandle(snapshot);
 
-    *setCount = done;
-    *totalCount = total;
-
-    if (failed > 0) {
-        *outError = firstErr;
-        return FALSE;
+    if (prioFailed) {
+        out->prioErr = firstPrioErr;
     }
-
-    return TRUE;
+    if (ioFailed) {
+        out->ioErr = firstIoErr;
+    }
 }
 
 static HANDLE OpenTargetProcess(DWORD pid, DWORD *outRights, DWORD *outError) {
@@ -556,6 +693,7 @@ PROCESS_RESULT LimiterApplySettings(
     DWORD rights = 0;
     DWORD openErr = 0;
     BOOL haveJobRights;
+    BOOL procIoOk;
     int i;
 
     memset(&r, 0, sizeof(r));
@@ -618,7 +756,8 @@ PROCESS_RESULT LimiterApplySettings(
     }
 
     r.attempted[STEP_IO] = TRUE;
-    if (SetVeryLowIoPriority(hProcess, &r.err[STEP_IO])) {
+    procIoOk = SetVeryLowIoPriority(hProcess, &r.err[STEP_IO]);
+    if (procIoOk) {
         r.ok[STEP_IO] = TRUE;
     }
 
@@ -629,9 +768,33 @@ PROCESS_RESULT LimiterApplySettings(
 
     CloseHandle(hProcess);
 
-    r.attempted[STEP_THR] = TRUE;
-    if (IdleThreads(pid, &r.thrSet, &r.thrTotal, &r.err[STEP_THR])) {
-        r.ok[STEP_THR] = TRUE;
+    {
+        THREAD_PASS tp;
+
+        RunThreadPass(pid, &tp);
+
+        r.attempted[STEP_THR] = TRUE;
+        r.thrSet = tp.prioSet;
+        r.thrTotal = tp.prioTotal;
+
+        if (tp.enumerated && tp.prioErr == ERROR_SUCCESS) {
+            r.ok[STEP_THR] = TRUE;
+        } else {
+            r.err[STEP_THR] = tp.enumerated ? tp.prioErr : tp.enumErr;
+        }
+
+        /* The IO step is process-wide plus per-thread; it only counts as
+           applied when the process-level set stuck and every thread we could
+           reach also took the setting. If the thread list itself could not
+           be obtained, fall back to the process-level verdict. */
+        r.ioThrSet = tp.ioSet;
+        r.ioThrTotal = tp.ioTotal;
+
+        if (procIoOk && tp.enumerated && tp.ioErr != ERROR_SUCCESS) {
+            r.ok[STEP_IO] = FALSE;
+            r.err[STEP_IO] = tp.ioErr;
+            r.ioThreadsFailed = TRUE;
+        }
     }
 
     for (i = 0; i < STEP_COUNT; i++) {

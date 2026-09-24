@@ -31,6 +31,16 @@ typedef struct _PROCESS_POWER_THROTTLING_STATE {
 #define MEMORY_PRIORITY_VERY_LOW 1
 #endif
 
+/* The SDK calls it SE_INCREASE_BASE_PRIORITY_NAME, MinGW
+   SE_INC_BASE_PRIORITY_NAME. */
+#ifndef SE_INCREASE_BASE_PRIORITY_NAME
+#ifdef SE_INC_BASE_PRIORITY_NAME
+#define SE_INCREASE_BASE_PRIORITY_NAME SE_INC_BASE_PRIORITY_NAME
+#else
+#define SE_INCREASE_BASE_PRIORITY_NAME L"SeIncreaseBasePriorityPrivilege"
+#endif
+#endif
+
 #ifndef JOB_OBJECT_CPU_RATE_CONTROL_ENABLE
 #define JOB_OBJECT_CPU_RATE_CONTROL_ENABLE 0x1
 #define JOB_OBJECT_CPU_RATE_CONTROL_WEIGHT_BASED 0x2
@@ -44,8 +54,17 @@ typedef struct _PROCESS_POWER_THROTTLING_STATE {
 
 /* NtSetInformationProcess(ProcessIoPriority); PROCESSINFOCLASS 0x21 */
 #define NT_PROCESS_IO_PRIORITY 0x21
+/* NtSetInformationThread(ThreadIoPriority); THREADINFOCLASS 0x16.
+   Setting needs THREAD_SET_INFORMATION, the read-back needs
+   THREAD_QUERY_LIMITED_INFORMATION, and the set is documented to require
+   SeIncreaseBasePriorityPrivilege. */
+#define NT_THREAD_IO_PRIORITY 0x16
 #define IO_PRIORITY_VERY_LOW 0
 #define NT_SUCCESS(status) ((LONG)(status) >= 0)
+
+#ifndef THREAD_QUERY_LIMITED_INFORMATION
+#define THREAD_QUERY_LIMITED_INFORMATION 0x0800
+#endif
 
 /* Layout-compatible with JOBOBJECT_CPU_RATE_CONTROL_INFORMATION. */
 typedef struct _ACE_CPU_RATE {
@@ -96,6 +115,9 @@ typedef struct _PROCESS_RESULT {
     int okCount;
     int thrSet;
     int thrTotal;
+    int ioThrSet;                       /* threads whose I/O priority stuck */
+    int ioThrTotal;                     /* threads the I/O priority was tried on */
+    BOOL ioThreadsFailed;               /* IO failed on the per-thread part */
 } PROCESS_RESULT;
 
 #endif /* COMMON_H */

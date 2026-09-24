@@ -516,7 +516,7 @@ void UIReportProcess(int index, const TARGET *target, const PROCESS_RESULT *r) {
     int n = 0;
     int i;
 
-    UISegSet(&row[n++], COLOR_HEAD, " %2d  ", index);
+    UISegSet(&row[n++], COLOR_HEAD, "%2d  ", index);
     UISegSet(&row[n++], COLOR_WHITE, "%-*ls", NAME_W, target->name);
     UISegSet(&row[n++], COLOR_WARN, " %5lu  ", (unsigned long)target->pid);
 
@@ -555,6 +555,13 @@ void UIReportProcess(int index, const TARGET *target, const PROCESS_RESULT *r) {
 
             if (i == STEP_THR) {
                 UIAddNote(note, sizeof(note), &pos, "thr %d/%d", r->thrSet, r->thrTotal);
+                if (r->err[i] == ERROR_NOT_VERIFIED) {
+                    UIAddNote(note, sizeof(note), &pos, "(nv)");
+                } else {
+                    UIAddNote(note, sizeof(note), &pos, "(err %lu)", (unsigned long)r->err[i]);
+                }
+            } else if (i == STEP_IO && r->ioThreadsFailed) {
+                UIAddNote(note, sizeof(note), &pos, "io %d/%d", r->ioThrSet, r->ioThrTotal);
                 if (r->err[i] == ERROR_NOT_VERIFIED) {
                     UIAddNote(note, sizeof(note), &pos, "(nv)");
                 } else {

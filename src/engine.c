@@ -73,9 +73,9 @@ int EngineRunOnce(BOOL isFirst) {
         UISegSet(&status[n++], COLOR_OK_BG, " ✓ admin");
         UISegSet(&status[n++], COLOR_HEAD, " · ");
         if (dbgOk) {
-            UISegSet(&status[n++], COLOR_OK_BG, " ✓ SeDebugPrivilege");
+            UISegSet(&status[n++], COLOR_OK_BG, "✓ SeDebugPrivilege");
         } else {
-            UISegSet(&status[n++], COLOR_WARN_BG, " ! SeDebugPrivilege(%lu)",
+            UISegSet(&status[n++], COLOR_WARN_BG, "! SeDebugPrivilege(%lu)",
                      (unsigned long)dbgErr);
         }
         UISegSet(&status[n++], COLOR_HEAD, " · ");
@@ -114,7 +114,7 @@ int EngineRunOnce(BOOL isFirst) {
         SEG head[3 + STEP_COUNT * 2];
         int n = 0;
 
-        UISegSet(&head[n++], COLOR_HEAD, " %2s  %-*s %5s  ", "#", NAME_W, "PROCESS", "PID");
+        UISegSet(&head[n++], COLOR_HEAD, "%2s  %-*s %5s  ", "#", NAME_W, "PROCESS", "PID");
         for (s = 0; s < STEP_COUNT; s++) {
             if (s) {
                 UISegSet(&head[n++], COLOR_HEAD, " ");
@@ -211,7 +211,7 @@ int EngineRunOnce(BOOL isFirst) {
             }
             UIBoxRow(a, ap);
 
-            UIBoxLine(COLOR_HEAD, "          opened %d/%d · cpu cap %d · eco/io/mem are process-wide",
+            UIBoxLine(COLOR_HEAD, "          opened %d/%d · cpu cap %d · io: proc+threads · eco/mem: proc",
                       openedCount, foundCount, applied[STEP_CAP]);
 
             if (existingJobCount > 0) {
