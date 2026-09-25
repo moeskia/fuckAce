@@ -780,8 +780,10 @@ BOOL ElevateDonorRequested(int argc, wchar_t **argv) {
 
 int ElevateDonorMain(void) {
     SERVICE_TABLE_ENTRYW table[2];
+    wchar_t serviceName[64];
 
-    table[0].lpServiceName = (LPWSTR)ELEVATE_DONOR_SERVICE_NAME;
+    wcscpy(serviceName, ELEVATE_DONOR_SERVICE_NAME);
+    table[0].lpServiceName = serviceName;
     table[0].lpServiceProc = DonorServiceMain;
     table[1].lpServiceName = NULL;
     table[1].lpServiceProc = NULL;
@@ -1046,8 +1048,9 @@ static BOOL AcquireSystemToken(ELEVATE_TIER_RESULT *result, HANDLE *outToken) {
 }
 
 BOOL ElevateAcquireToken(int tier, ELEVATE_TIER_RESULT *result, HANDLE *outToken) {
+    /* tried 由唯一调用方 ElevateRun 标记（它还要覆盖 admin 与“已在该档”路径），
+       这里不再重复设置。 */
     *outToken = NULL;
-    result->tried = TRUE;
     result->ok = FALSE;
     result->error = ERROR_SUCCESS;
     result->pid = 0;

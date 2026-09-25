@@ -21,7 +21,7 @@ try {
 
     gcc -Os -Wall -Wextra -municode -mconsole `
         -Isrc `
-        -s -fno-asynchronous-unwind-tables `
+        -s -fno-asynchronous-unwind-tables -fstack-protector-strong `
         -ffunction-sections -fdata-sections `
         "-Wl,--gc-sections" "-Wl,--file-alignment=512" `
         "-Wl,--nxcompat" "-Wl,--dynamicbase" "-Wl,--high-entropy-va" `

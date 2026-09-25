@@ -39,7 +39,7 @@ int EngineRunOnce(BOOL isFirst) {
     UIResetTiming();
     if (!ElevateHasRights()) {
         /* 提权链已经把每一档的失败原因记在 g_elevate 里，直接摊开给用户看。 */
-        UIElevationPanel(&g_elevate, NULL, "✗ administrator privileges required · rerun with --diagnose");
+        UIElevationPanel(&g_elevate, NULL, ELEVATE_NO_RIGHTS_FOOTER);
         return 1;
     }
 

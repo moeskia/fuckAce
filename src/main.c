@@ -46,7 +46,7 @@ int wmain(int argc, wchar_t **argv) {
     }
     if (!ElevateHasRights()) {
         /* 一档都没拿到，重试多少次结果都一样，画一次面板直接退出，别空转。 */
-        UIElevationPanel(&g_elevate, NULL, "✗ administrator privileges required · rerun with --diagnose");
+        UIElevationPanel(&g_elevate, NULL, ELEVATE_NO_RIGHTS_FOOTER);
         UIShowCursor(TRUE);
         return 1;
     }

@@ -98,6 +98,10 @@ static inline BOOL ElevateHasRights(void) {
     return g_elevate.process.valid && g_elevate.tier >= 0;
 }
 
+/* 没有任何档位可用时的统一提示：main 与 engine 两处共用，避免文案漂移。 */
+#define ELEVATE_NO_RIGHTS_FOOTER \
+    "✗ administrator privileges required · rerun with --diagnose"
+
 const wchar_t *ElevateTierName(int tier);
 const char *ElevateTierTag(int tier);
 int ElevateTierFromTag(const wchar_t *text, BOOL *outOk);

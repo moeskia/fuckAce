@@ -1,7 +1,9 @@
 #ifndef COMMON_H
 #define COMMON_H
 
+#ifndef _WIN32_WINNT
 #define _WIN32_WINNT 0x0A00
+#endif
 
 #include <windows.h>
 #include <winternl.h>
@@ -67,6 +69,11 @@ typedef struct _PROCESS_POWER_THROTTLING_STATE {
 
 #ifndef THREAD_QUERY_LIMITED_INFORMATION
 #define THREAD_QUERY_LIMITED_INFORMATION 0x0800
+#endif
+
+/* MinGW/SDK 的 winternl.h 不声明这个信息类，值本身是稳定的 0x16。 */
+#ifndef ThreadIoPriority
+#define ThreadIoPriority ((THREADINFOCLASS)0x16)
 #endif
 
 #define ERROR_NOT_VERIFIED 0x20000001

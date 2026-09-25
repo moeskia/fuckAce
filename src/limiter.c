@@ -6,6 +6,8 @@ static DWORD NtError(NTSTATUS status) {
     return (DWORD)RtlNtStatusToDosError(status);
 }
 
+/* 生产路径用 ElevateHasRights()（生效档位）判定；本函数只按“进程令牌里的
+   Administrators 组是否启用”判定，仅供测试与诊断参考。 */
 BOOL LimiterIsRunAsAdmin(void) {
     /* 必须查进程令牌而不是当前线程：提权成功后线程可能正模拟
        TrustedInstaller/SYSTEM，那些令牌里的 Administrators 是 deny-only。 */
@@ -138,14 +140,14 @@ static BOOL SetVeryLowIoPriority(HANDLE handle, BOOL thread, DWORD *outError) {
 
     *outError = ERROR_SUCCESS;
     status = thread
-        ? NtSetInformationThread(handle, (THREADINFOCLASS)0x16, &value, sizeof(value))
+        ? NtSetInformationThread(handle, ThreadIoPriority, &value, sizeof(value))
         : NtSetInformationProcess(handle, ProcessIoPriority, &value, sizeof(value));
     if (!NT_SUCCESS(status)) {
         *outError = NtError(status);
         return FALSE;
     }
     status = thread
-        ? NtQueryInformationThread(handle, (THREADINFOCLASS)0x16, &check, sizeof(check), NULL)
+        ? NtQueryInformationThread(handle, ThreadIoPriority, &check, sizeof(check), NULL)
         : NtQueryInformationProcess(handle, ProcessIoPriority, &check, sizeof(check), NULL);
     if (!NT_SUCCESS(status)) {
         *outError = NtError(status);
