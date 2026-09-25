@@ -8,10 +8,15 @@ int wmain(int argc, wchar_t **argv) {
     int code;
     BOOL isFirst = TRUE;
     ELEVATE_RESULT elevate;
+    DWORD repairPid = 0;
 
     /* SCM 拉起的供体进程跑在 session 0、没有控制台，必须在任何界面代码之前分流。 */
     if (ElevateDonorRequested(argc, argv)) {
         return ElevateDonorMain();
+    }
+    /* 同理：TI 劫持期间的守护进程也是 session 0、无控制台。 */
+    if (ElevateTiRepairRequested(argc, argv, &repairPid)) {
+        return ElevateTiRepairMain(repairPid);
     }
 
     UIInit();
@@ -20,6 +25,13 @@ int wmain(int argc, wchar_t **argv) {
     if (!ConfigParseArgs(argc, argv)) {
         UIShowCursor(TRUE);
         return 1;
+    }
+
+    if (g_config.diagnose) {
+        ElevatePrepareDiagnose();
+        UIDiagnosePanel(&g_elevate);
+        UIShowCursor(TRUE);
+        return g_elevate.landed ? 0 : 1;
     }
 
     /* 先按 TrustedInstaller → SYSTEM → admin 依次回退拿到最高可用令牌，
@@ -37,12 +49,6 @@ int wmain(int argc, wchar_t **argv) {
         }
         UIShowCursor(TRUE);
         return (int)elevate.exitCode;
-    }
-    if (g_config.diagnose) {
-        /* 只报告提权链，不扫描、不修改任何进程。 */
-        UIDiagnosePanel(&g_elevate);
-        UIShowCursor(TRUE);
-        return g_elevate.landed ? 0 : 1;
     }
     if (!ElevateHasRights()) {
         /* 一档都没拿到，重试多少次结果都一样，画一次面板直接退出，别空转。 */

@@ -2,6 +2,7 @@
 #include "config.h"
 #include "limiter.h"
 #include "elevate.h"
+#include "titoken.h"
 
 static int g_failures;
 
@@ -95,6 +96,11 @@ static void TestElevateConfig(void) {
     const wchar_t *escalatedEmpty[] = {L"--escalated="};
     const wchar_t *diagnoseArgs[] = {L"--diagnose"};
     const wchar_t *noService[] = {L"--no-service"};
+    const wchar_t *noTiForge[] = {L"--no-ti-forge"};
+    const wchar_t *tiHijack[] = {L"--ti-hijack"};
+    const wchar_t *noTiHijack[] = {L"--no-ti-hijack"};
+    const wchar_t *hijackThenOff[] = {L"--ti-hijack", L"--no-ti-hijack"};
+    const wchar_t *offThenHijack[] = {L"--no-ti-hijack", L"--ti-hijack"};
     const wchar_t *mixed[] = {L"--no-elevate", L"--as=system"};
 
     CHECK(ParseArgs(NULL, 0), L"elevate default parse failed");
@@ -107,6 +113,16 @@ static void TestElevateConfig(void) {
     CHECK(ParseArgs(diagnoseArgs, 1) && g_config.diagnose, L"--diagnose not parsed");
     CHECK(g_config.elevateServiceDonor, L"service donor should default on");
     CHECK(ParseArgs(noService, 1) && !g_config.elevateServiceDonor, L"--no-service not parsed");
+    /* 默认档位就是 TI，而 Windows 11 客户端上只有劫持能拿到 TI，
+       所以默认值是 SAFE（只在服务已经停下来时劫持），不是 OFF。 */
+    CHECK(g_config.tiForge, L"TI forge should default on");
+    CHECK(g_config.tiHijack == TI_HIJACK_SAFE, L"TI hijack should default to SAFE");
+    CHECK(ParseArgs(noTiForge, 1) && !g_config.tiForge, L"--no-ti-forge not parsed");
+    CHECK(ParseArgs(tiHijack, 1) && g_config.tiHijack == TI_HIJACK_FORCE, L"--ti-hijack not parsed");
+    CHECK(ParseArgs(tiHijack, 1) && g_config.tiForge, L"--ti-hijack must not disable forge");
+    CHECK(ParseArgs(noTiHijack, 1) && g_config.tiHijack == TI_HIJACK_OFF, L"--no-ti-hijack not parsed");
+    CHECK(ParseArgs(hijackThenOff, 2) && g_config.tiHijack == TI_HIJACK_OFF, L"last hijack switch should win");
+    CHECK(ParseArgs(offThenHijack, 2) && g_config.tiHijack == TI_HIJACK_FORCE, L"last hijack switch should win");
 
     CHECK(ParseArgs(noElevate, 1) && g_config.elevateMode == ELEVATE_MODE_OFF, L"--no-elevate not parsed");
     CHECK(ParseArgs(asTi, 1) && g_config.elevateMode == ELEVATE_TIER_TI, L"--as=ti not parsed");
@@ -222,6 +238,80 @@ static void TestElevateChildMode(void) {
     CHECK(!g_elevate.tiers[ELEVATE_TIER_TI].tried, L"child mode probed TrustedInstaller");
     CHECK(!g_elevate.tiers[ELEVATE_TIER_ADMIN].tried, L"child mode probed admin");
     CHECK(result.tier == g_elevate.tier, L"child tier result mismatch");
+}
+
+static void TestElevateDiagnose(void) {
+    ELEVATE_STATUS expected;
+    int tier;
+
+    memset(&expected, 0, sizeof(expected));
+    CHECK(ElevateQueryIdentity(&expected), L"diagnose identity query failed");
+    memset(&g_elevate, 0xA5, sizeof(g_elevate));
+    ElevatePrepareDiagnose();
+    CHECK(g_elevate.process.valid == expected.process.valid, L"diagnose process validity mismatch");
+    CHECK(g_elevate.process.tier == expected.process.tier, L"diagnose process tier mismatch");
+    CHECK(g_elevate.effective.tier == expected.effective.tier, L"diagnose effective tier mismatch");
+    CHECK(g_elevate.tiKeyStale == ElevateTiKeyStale(), L"diagnose stale backup mismatch");
+    for (tier = 0; tier < ELEVATE_TIER_COUNT; tier++) {
+        CHECK(!g_elevate.tiers[tier].tried, L"diagnose attempted a tier");
+        CHECK(!g_elevate.tiers[tier].ok, L"diagnose reported a landed tier");
+    }
+}
+
+/* TI 这一档的辅助件：内部参数识别、组匹配、以及“没备份时还原必须是 no-op”。 */
+static void TestTiHelpers(void) {
+    wchar_t *argv[2];
+    HANDLE token = NULL;
+    DWORD pid = 1234;
+
+    argv[0] = L"fuckAce.exe";
+    argv[1] = L"--tirepair=4321";
+    CHECK(ElevateTiRepairRequested(2, argv, &pid) && pid == 4321, L"--tirepair=<pid> not recognised");
+    argv[1] = L"--tirepair=";
+    CHECK(!ElevateTiRepairRequested(2, argv, &pid), L"empty --tirepair accepted");
+    argv[1] = L"--tirepair=12x";
+    CHECK(!ElevateTiRepairRequested(2, argv, &pid), L"non-numeric --tirepair accepted");
+    argv[1] = L"--tirepair=4294967296";
+    CHECK(!ElevateTiRepairRequested(2, argv, &pid), L"overflowing --tirepair accepted");
+    argv[1] = L"--tirepair=99999999999999999999999999999999999999";
+    CHECK(!ElevateTiRepairRequested(2, argv, &pid), L"oversized --tirepair accepted");
+    argv[1] = L"--syndonor";
+    CHECK(!ElevateTiRepairRequested(2, argv, &pid), L"unrelated flag treated as repair mode");
+
+    if (!ElevateTiKeyStale()) {
+        CHECK(ElevateTiRestoreKey(NULL), L"restore without a backup must succeed");
+    } else {
+        fwprintf(stderr, L"SKIP TI key restore check: a stale ImagePath backup is present\n");
+    }
+
+    CHECK(OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token), L"open own token failed");
+    if (token) {
+        /* 组匹配得先证明确实能匹配：Authenticated Users 每个交互令牌里都有。 */
+        CHECK(ElevateTokenHasGroup(token, L"S-1-5-11"), L"group matcher misses authenticated users");
+        /* 普通令牌不能凭空声称自己是 TrustedInstaller。 */
+        CHECK(!ElevateTokenHasGroup(token, TITOKEN_TI_SID_STRING), L"plain token claims the TI sid");
+        CloseHandle(token);
+    }
+}
+
+/* 伪造路径的“拒绝”行为：非 SYSTEM 身份下必须干净地失败。
+   这是能在普通权限下真正跑到的一段伪造代码（参数拼装、ntdll 解析、特权检查），
+   也是防止“没权限却造出一个看似成功的令牌”的兜底用例。 */
+static void TestTiForgeRefusal(void) {
+    int tier = ElevateCurrentTier();
+    DWORD error = ERROR_SUCCESS;
+    HANDLE token;
+
+    if (tier == ELEVATE_TIER_SYSTEM || tier == ELEVATE_TIER_TI) {
+        fwprintf(stderr, L"SKIP forge refusal case: already running as SYSTEM or above\n");
+        return;
+    }
+    token = TiTokenForge(0, &error);
+    if (token) {
+        CloseHandle(token);
+    }
+    CHECK(!token, L"forge produced a token without SeCreateTokenPrivilege");
+    CHECK(error != ERROR_SUCCESS, L"forge failure did not report an error");
 }
 
 static void TestResultState(void) {
@@ -439,6 +529,9 @@ int wmain(int argc, wchar_t **argv) {
     TestElevateOff();
     TestElevateSingleTier();
     TestElevateChildMode();
+    TestElevateDiagnose();
+    TestTiHelpers();
+    TestTiForgeRefusal();
     TestResultState();
     TestFailures();
     TestChildBatch();

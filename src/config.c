@@ -25,6 +25,8 @@ void ConfigInit(void) {
     g_config.elevateUse = ELEVATE_USE_AUTO;
     g_config.elevateFallback = TRUE;
     g_config.elevateServiceDonor = TRUE;
+    g_config.tiForge = TRUE;
+    g_config.tiHijack = TI_HIJACK_SAFE;
     g_config.escalatedTier = ELEVATE_TIER_NONE;
     for (i = 0; i < (int)(sizeof(defaultTargets) / sizeof(defaultTargets[0])); i++) {
         ConfigAddTarget(defaultTargets[i]);
@@ -78,6 +80,18 @@ BOOL ConfigParseArgs(int argc, wchar_t **argv) {
         }
         if (_wcsicmp(argv[i], L"--no-service") == 0) {
             g_config.elevateServiceDonor = FALSE;
+            continue;
+        }
+        if (_wcsicmp(argv[i], L"--no-ti-forge") == 0) {
+            g_config.tiForge = FALSE;
+            continue;
+        }
+        if (_wcsicmp(argv[i], L"--ti-hijack") == 0) {
+            g_config.tiHijack = TI_HIJACK_FORCE;
+            continue;
+        }
+        if (_wcsicmp(argv[i], L"--no-ti-hijack") == 0) {
+            g_config.tiHijack = TI_HIJACK_OFF;
             continue;
         }
         if (_wcsicmp(argv[i], L"--diagnose") == 0) {
@@ -181,7 +195,8 @@ BOOL ConfigParseArgs(int argc, wchar_t **argv) {
                 stderr,
                 L"usage: fuckAce [--rate=PERCENT] [--no-cap] [--nest] [--as=ti|system|admin|auto|off]\n"
                 L"                [--no-elevate] [--no-fallback] [--impersonate|--spawn] [--keep-ti]\n"
-                L"                [--no-service] [--diagnose] [process.exe ...]\n");
+                L"                [--no-service] [--no-ti-forge] [--ti-hijack|--no-ti-hijack] [--diagnose]\n"
+                L"                [process.exe ...]\n");
             fflush(stderr);
             return FALSE;
         }

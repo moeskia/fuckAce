@@ -711,10 +711,11 @@ void UIDiagnosePanel(const ELEVATE_STATUS *status) {
     int tier;
 
     UIClearScreen();
-    UILayoutConsole(16 + ELEVATE_TIER_COUNT);
+    UILayoutConsole(24 + ELEVATE_TIER_COUNT);
     UIResetCursor();
     UIBoxRule("┌", "┐");
     UIBoxLine(COLOR_TITLE, " fuckAce · privilege diagnostics");
+    UIBoxLine(COLOR_FRAME, " read-only: no tier attempted, no service or registry changes");
     UIBoxRule("├", "┤");
     UIBoxLine(COLOR_HEAD, " process token");
     if (status->process.valid) {
@@ -735,6 +736,33 @@ void UIDiagnosePanel(const ELEVATE_STATUS *status) {
         (unsigned long)status->process.integrityRid,
         UIIntegrityName(status->process.integrityRid),
         status->process.elevated ? " · TokenElevation yes" : " · TokenElevation no");
+    UIBoxLine(
+        COLOR_HEAD,
+        "   ti sid     %s · TrustedInstaller key backup %s",
+        status->process.trustedInstaller ? "in token groups" : "absent",
+        status->tiKeyStale ? "STALE" : "clean");
+    UIBoxRule("├", "┤");
+    /* 引擎真正以谁的身份在跑，跟"进程令牌"经常不是一回事（TI/SYSTEM 两档都是就地
+       把当前线程切过去）。不把这一栏画出来，面板就会只显示进程令牌，
+       让人以为提权没生效。 */
+    UIBoxLine(COLOR_HEAD, " effective token  (what the engine actually runs as)");
+    if (status->effective.valid) {
+        UIBoxLine(COLOR_WHITE, "   identity   %ls", ElevateTierName(status->effective.tier));
+        UIBoxLine(
+            COLOR_WHITE,
+            "   logon      %ls%s",
+            status->effective.account[0] ? status->effective.account : L"-",
+            status->effective.trustedInstaller ? " · NT SERVICE\\TrustedInstaller in groups" : "");
+        if (status->effective.trustedInstaller) {
+            /* 这一条就是为了解释"为什么提到 TI 了还显示 SYSTEM"：
+               真正的 TrustedInstaller.exe 服务进程也是这副令牌。 */
+            UIBoxLine(COLOR_FRAME, "              a TI token IS a LocalSystem logon with the TI service");
+            UIBoxLine(COLOR_FRAME, "              SID added to its groups - the real TrustedInstaller.exe");
+            UIBoxLine(COLOR_FRAME, "              service runs on exactly the same kind of token.");
+        }
+    } else {
+        UIBoxLine(COLOR_FAIL, "   token query failed (Error=%lu)", (unsigned long)status->effective.error);
+    }
     UIBoxRule("├", "┤");
     UIBoxLine(COLOR_HEAD, " tier attempts  (as=%s · use=%s · fallback=%s)",
               status->mode == ELEVATE_MODE_AUTO ? "auto"
@@ -762,12 +790,20 @@ void UIDiagnosePanel(const ELEVATE_STATUS *status) {
                locale 转换，默认 C locale 下转不出来，输出会变成乱码或直接截断。 */
             UIBoxLine(
                 COLOR_FAIL,
-                "   ✗  %-16ls err %lu (%s)%s%ls",
+                "   ✗  %-16ls err %lu (%s)",
                 ElevateTierName(tier),
                 (unsigned long)info->error,
-                *reason ? reason : "unknown",
-                info->note[0] ? " · " : "",
-                info->note);
+                *reason ? reason : "unknown");
+            /* 失败原因单独占一行：这一档现在的诊断信息（借不到 SYSTEM 底座、
+               伪造被拒、劫持跳过…）比一个错误码长得多，挤在错误码后面只会被边框裁掉。
+               它还常常超过一整行，所以交给按宽度折行的实现，别让最关键的那句被切掉。 */
+            if (info->note[0]) {
+                char note[512];
+
+                if (WideCharToMultiByte(CP_UTF8, 0, info->note, -1, note, sizeof(note), NULL, NULL)) {
+                    UIBoxWrap(COLOR_FRAME, note);
+                }
+            }
         }
     }
     UIBoxRule("├", "┤");

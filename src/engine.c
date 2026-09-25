@@ -86,20 +86,23 @@ int EngineRunOnce(BOOL isFirst) {
         int count = 0;
 
         /* 徽章只带前导空格（与上面 " ✓ admin" 一致），后面每一项自带 " · " 分隔，
-           这样就不会出现 "token  SYSTEM  impersonating" 这种双空格。 */
+           这样不会出现 "token  TrustedInstaller  session 1" 这种双空格。 */
         UISegSet(&token[count++], COLOR_HEAD, " token");
         if (g_elevate.landed && g_elevate.tier >= 0) {
             UISegSet(&token[count++], COLOR_OK_BG, " %ls", ElevateTierName(g_elevate.tier));
         } else {
             UISegSet(&token[count++], COLOR_WARN_BG, " none");
         }
-        if (g_elevate.impersonating) {
-            UISegSet(&token[count++], COLOR_WARN, " · impersonating");
-        }
         if (g_elevate.spawned) {
             UISegSet(&token[count++], COLOR_FRAME, " · via parent token");
         }
-        if (g_elevate.effective.account[0]) {
+        if (g_elevate.effective.trustedInstaller) {
+            /* TI 令牌的结构就是 "LocalSystem 登录 + NT SERVICE\TrustedInstaller 进组"，
+               真正的 TrustedInstaller.exe 服务进程也是这副样子。这里直接打 TokenUser
+               会显示成 NT AUTHORITY\SYSTEM，看上去像提权根本没生效——所以按访问检查
+               认的那个身份（服务 SID）来标。 */
+            UISegSet(&token[count++], COLOR_WHITE, " · NT SERVICE\\TrustedInstaller");
+        } else if (g_elevate.effective.account[0]) {
             UISegSet(&token[count++], COLOR_WHITE, " · %ls", g_elevate.effective.account);
         }
         if (g_elevate.process.sessionId != 0xFFFFFFFFu) {
