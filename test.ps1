@@ -3,7 +3,8 @@ $out = Join-Path $PSScriptRoot "tests\fuckAceTests.exe"
 Push-Location $PSScriptRoot
 try {
     gcc -Os -Wall -Wextra -municode -mconsole -Isrc `
-        tests/test_main.c src/config.c src/limiter.c -lntdll -o $out
+        tests/test_main.c src/config.c src/limiter.c src/elevate.c src/ui.c `
+        -lntdll -ladvapi32 -lshell32 -o $out
     if ($LASTEXITCODE -ne 0) {
         throw "test build failed"
     }

@@ -25,7 +25,8 @@ try {
         -ffunction-sections -fdata-sections `
         "-Wl,--gc-sections" "-Wl,--file-alignment=512" `
         "-Wl,--nxcompat" "-Wl,--dynamicbase" "-Wl,--high-entropy-va" `
-        src/main.c src/config.c src/limiter.c src/ui.c src/engine.c $res -lntdll -o fuckAce.exe
+        src/main.c src/config.c src/limiter.c src/ui.c src/engine.c src/elevate.c $res `
+        -lntdll -ladvapi32 -lshell32 -o fuckAce.exe
     if ($LASTEXITCODE -ne 0) {
         throw "gcc failed (exit $LASTEXITCODE)"
     }

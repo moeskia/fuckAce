@@ -1,50 +1,27 @@
 #include "limiter.h"
 #include "config.h"
+#include "elevate.h"
 
 static DWORD NtError(NTSTATUS status) {
     return (DWORD)RtlNtStatusToDosError(status);
 }
 
 BOOL LimiterIsRunAsAdmin(void) {
+    /* 必须查进程令牌而不是当前线程：提权成功后线程可能正模拟
+       TrustedInstaller/SYSTEM，那些令牌里的 Administrators 是 deny-only。 */
+    HANDLE token = NULL;
     BOOL isAdmin = FALSE;
-    PSID adminGroup = NULL;
-    SID_IDENTIFIER_AUTHORITY ntAuthority = SECURITY_NT_AUTHORITY;
 
-    if (AllocateAndInitializeSid(
-            &ntAuthority, 2, SECURITY_BUILTIN_DOMAIN_RID,
-            DOMAIN_ALIAS_RID_ADMINS, 0, 0, 0, 0, 0, 0, &adminGroup)) {
-        if (!CheckTokenMembership(NULL, adminGroup, &isAdmin)) {
-            isAdmin = FALSE;
-        }
-        FreeSid(adminGroup);
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
+        return FALSE;
     }
+    isAdmin = ElevateTokenHasAdminGroup(token);
+    CloseHandle(token);
     return isAdmin;
 }
 
 static BOOL EnablePrivilege(LPCWSTR name, DWORD *outError) {
-    HANDLE token;
-    TOKEN_PRIVILEGES privileges;
-    LUID luid;
-    BOOL ok;
-
-    *outError = ERROR_SUCCESS;
-    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &token)) {
-        *outError = GetLastError();
-        return FALSE;
-    }
-    if (!LookupPrivilegeValueW(NULL, name, &luid)) {
-        *outError = GetLastError();
-        CloseHandle(token);
-        return FALSE;
-    }
-    privileges.PrivilegeCount = 1;
-    privileges.Privileges[0].Luid = luid;
-    privileges.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
-    SetLastError(ERROR_SUCCESS);
-    ok = AdjustTokenPrivileges(token, FALSE, &privileges, sizeof(privileges), NULL, NULL);
-    *outError = GetLastError();
-    CloseHandle(token);
-    return ok && *outError == ERROR_SUCCESS;
+    return ElevateEnablePrivilege(name, outError);
 }
 
 BOOL LimiterEnableDebugPrivilege(DWORD *outError) {

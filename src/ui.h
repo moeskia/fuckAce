@@ -24,6 +24,9 @@ typedef struct _SEG {
     WORD color;
 } SEG;
 
+struct _ELEVATE_STATUS;
+struct _ELEVATE_RESULT;
+
 void UIInit(void);
 void UIShowCursor(BOOL show);
 void UIClearScreen(void);
@@ -38,5 +41,11 @@ void UIBoxLine(WORD color, const char *format, ...);
 void UIReportProcess(int index, const TARGET *target, const PROCESS_RESULT *result);
 void UIDrawTiming(ULONGLONG elapsedMs, const char *machine);
 int UICountdown(const char *label, const char *hint, int seconds);
+void UIElevationPanel(
+    const struct _ELEVATE_STATUS *status,
+    const struct _ELEVATE_RESULT *result,
+    const char *footer);
+void UIDiagnosePanel(const struct _ELEVATE_STATUS *status);
+void UIHandoffSummary(const struct _ELEVATE_RESULT *result);
 
 #endif

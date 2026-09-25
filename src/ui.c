@@ -1,4 +1,5 @@
 #include "ui.h"
+#include "elevate.h"
 
 static HANDLE g_console;
 static int g_width = 60;
@@ -63,6 +64,8 @@ void UIClearToEnd(void) {
             }
         }
     }
+    /* 画完必须落盘：后面可能就阻塞在等待子进程上，缓冲区里的画面用户看不到。 */
+    fflush(stdout);
 }
 
 static void UISetColor(WORD color) {
@@ -98,6 +101,16 @@ static const char *UIShortReason(DWORD error) {
         return "privilege not held";
     case ERROR_NOT_FOUND:
         return "not found";
+    case ERROR_CANCELLED:
+        return "declined";
+    case ERROR_SERVICE_NOT_ACTIVE:
+        return "service not active";
+    case ERROR_SERVICE_DOES_NOT_EXIST:
+        return "no such service";
+    case ERROR_TIMEOUT:
+        return "timed out";
+    case ERROR_INVALID_ACCOUNT_NAME:
+        return "wrong account";
     case ERROR_NOT_ENOUGH_MEMORY:
         return "out of memory";
     case ERROR_PARTIAL_COPY:
@@ -341,11 +354,15 @@ void UIBoxRule(const char *left, const char *right) {
 
 void UIBoxRow(int count, const SEG *segments) {
     int used = 0;
+    int budget = g_width - 4;
     int i;
 
+    if (budget < 1) {
+        budget = 1;
+    }
     UISetColor(COLOR_FRAME);
     fputs("│ ", stdout);
-    for (i = 0; i < count; i++) {
+    for (i = 0; i < count && used < budget; i++) {
         const char *text = segments[i].text;
 
         if (*text == ' ') {
@@ -353,17 +370,27 @@ void UIBoxRow(int count, const SEG *segments) {
             do {
                 putchar(' ');
                 text++;
-            } while (*text == ' ');
+                used++;
+            } while (*text == ' ' && used < budget);
         }
         UISetColor(segments[i].color);
-        fputs(text, stdout);
-        used += UIUtf8Len(segments[i].text);
+        /* 逐码点输出，超出内容宽度就截断，别把右边框顶出去。
+           长度按 NUL 兜底：万一字符串尾部是残缺的 UTF-8 序列，
+           直接按首字节推断长度会读到 NUL 之后。 */
+        while (*text && used < budget) {
+            unsigned char lead = (unsigned char)*text;
+            int length = lead >= 0xF0 ? 4 : lead >= 0xE0 ? 3 : lead >= 0xC0 ? 2 : 1;
+            int at;
+
+            for (at = 1; at < length && text[at]; at++) {
+            }
+            fwrite(text, 1, (size_t)at, stdout);
+            text += at;
+            used++;
+        }
     }
     UISetColor(COLOR_FRAME);
-    if (used > g_width - 4) {
-        used = g_width - 4;
-    }
-    for (i = 0; i < g_width - 4 - used; i++) {
+    for (i = 0; i < budget - used; i++) {
         putchar(' ');
     }
     fputs(" │", stdout);
@@ -579,4 +606,213 @@ void UIReportProcess(int index, const TARGET *target, const PROCESS_RESULT *resu
             UIBoxWrap(COLOR_WARN, note);
         }
     }
+}
+
+static void UIElevationTierRow(const ELEVATE_TIER_RESULT *info, int tier) {
+    SEG row[8];
+    int count = 0;
+    WORD color;
+    const char *mark;
+
+    if (!info->tried) {
+        color = COLOR_FRAME;
+        mark = "·";
+    } else if (info->ok) {
+        color = COLOR_OK;
+        mark = "✓";
+    } else {
+        color = COLOR_FAIL;
+        mark = "✗";
+    }
+    UISegSet(&row[count++], COLOR_FRAME, "  ");
+    UISegSet(&row[count++], color, "%s ", mark);
+    UISegSet(&row[count++], color, "%-16ls ", ElevateTierName(tier));
+    if (!info->tried) {
+        UISegSet(&row[count++], COLOR_FRAME, "not attempted");
+    } else if (info->ok) {
+        UISegSet(&row[count++], COLOR_WHITE, "pid %lu", (unsigned long)info->pid);
+        if (info->source[0]) {
+            UISegSet(&row[count++], COLOR_HEAD, " · %ls", info->source);
+        }
+        if (info->note[0]) {
+            UISegSet(&row[count++], COLOR_FRAME, " · %ls", info->note);
+        }
+    } else {
+        const char *reason = UIShortReason(info->error);
+
+        if (*reason) {
+            UISegSet(&row[count++], COLOR_WARN, "err %lu (%s)", (unsigned long)info->error, reason);
+        } else {
+            UISegSet(&row[count++], COLOR_WARN, "err %lu", (unsigned long)info->error);
+        }
+        if (info->source[0]) {
+            UISegSet(&row[count++], COLOR_HEAD, " · %ls", info->source);
+        }
+    }
+    UIBoxRow(count, row);
+}
+
+void UIElevationPanel(const ELEVATE_STATUS *status, const ELEVATE_RESULT *result, const char *footer) {
+    int tier;
+
+    UIClearScreen();
+    UILayoutConsole(7 + ELEVATE_TIER_COUNT);
+    UIResetCursor();
+
+    UIBoxRule("┌", "┐");
+    UIBoxLine(COLOR_TITLE, " fuckAce · privilege chain · as=%s · use=%s",
+              status->mode == ELEVATE_MODE_AUTO ? "auto"
+                                                 : status->mode == ELEVATE_MODE_OFF ? "off"
+                                                                                    : ElevateTierTag(status->mode),
+              ElevateUseName(status->use));
+    UIBoxRule("├", "┤");
+    for (tier = 0; tier < ELEVATE_TIER_COUNT; tier++) {
+        UIElevationTierRow(&status->tiers[tier], tier);
+    }
+    UIBoxRule("├", "┤");
+    if (result && result->handoff) {
+        UIBoxLine(COLOR_OK_BG, " → resumed as %ls (pid %lu)", ElevateTierName(result->tier), (unsigned long)result->pid);
+    } else if (result && result->tier >= 0) {
+        UIBoxLine(COLOR_OK_BG, " → running as %ls", ElevateTierName(result->tier));
+    } else if (status->landed && status->tier >= 0) {
+        UIBoxLine(COLOR_OK_BG, " → running as %ls", ElevateTierName(status->tier));
+    } else {
+        UIBoxLine(COLOR_WARN_BG, " ! no escalation — continuing with the current token");
+    }
+    if (footer && *footer) {
+        UIBoxLine(COLOR_FAIL_BG, " %s", footer);
+    }
+    UIBoxRule("└", "┘");
+    UIClearToEnd();
+}
+
+static const char *UIIntegrityName(DWORD rid) {
+    switch (rid) {
+    case 0x0000:
+        return "untrusted";
+    case 0x1000:
+        return "low";
+    case 0x2000:
+        return "medium";
+    case 0x2100:
+        return "medium-plus";
+    case 0x3000:
+        return "high";
+    case 0x4000:
+        return "system";
+    case 0x5000:
+        return "protected";
+    }
+    return "";
+}
+
+/* 提权失败时最需要的不是“失败了”，而是“卡在哪一档、系统原话是什么”。 */
+void UIDiagnosePanel(const ELEVATE_STATUS *status) {
+    int tier;
+
+    UIClearScreen();
+    UILayoutConsole(16 + ELEVATE_TIER_COUNT);
+    UIResetCursor();
+    UIBoxRule("┌", "┐");
+    UIBoxLine(COLOR_TITLE, " fuckAce · privilege diagnostics");
+    UIBoxRule("├", "┤");
+    UIBoxLine(COLOR_HEAD, " process token");
+    if (status->process.valid) {
+        UIBoxLine(COLOR_WHITE, "   account    %ls", status->process.account);
+        UIBoxLine(COLOR_FRAME, "   sid        %ls", status->process.sid);
+    } else {
+        UIBoxLine(COLOR_FAIL, "   token query failed (Error=%lu)", (unsigned long)status->process.error);
+    }
+    UIBoxLine(
+        COLOR_WHITE,
+        "   elevation  %s · Administrators %s · session %lu",
+        ElevateTypeName(status->process.elevationType),
+        status->process.adminGroup ? "enabled" : "absent or deny-only",
+        (unsigned long)status->process.sessionId);
+    UIBoxLine(
+        COLOR_WHITE,
+        "   integrity  0x%04lX (%s)%s",
+        (unsigned long)status->process.integrityRid,
+        UIIntegrityName(status->process.integrityRid),
+        status->process.elevated ? " · TokenElevation yes" : " · TokenElevation no");
+    UIBoxRule("├", "┤");
+    UIBoxLine(COLOR_HEAD, " tier attempts  (as=%s · use=%s · fallback=%s)",
+              status->mode == ELEVATE_MODE_AUTO ? "auto"
+                                                 : status->mode == ELEVATE_MODE_OFF ? "off"
+                                                                                    : ElevateTierTag(status->mode),
+              ElevateUseName(status->use),
+              status->fallback ? "on" : "off");
+    for (tier = 0; tier < ELEVATE_TIER_COUNT; tier++) {
+        const ELEVATE_TIER_RESULT *info = &status->tiers[tier];
+
+        if (!info->tried) {
+            UIBoxLine(COLOR_FRAME, "   ·  %-16ls not attempted", ElevateTierName(tier));
+        } else if (info->ok) {
+            UIBoxLine(
+                COLOR_OK,
+                "   ✓  %-16ls pid %lu · %ls · %ls",
+                ElevateTierName(tier),
+                (unsigned long)info->pid,
+                info->source[0] ? info->source : L"-",
+                info->note[0] ? info->note : L"-");
+        } else {
+            const char *reason = UIShortReason(info->error);
+
+            /* 分隔符必须是窄字符串：走 %ls 的宽字符 U+00B7 在窄 printf 里会按当前
+               locale 转换，默认 C locale 下转不出来，输出会变成乱码或直接截断。 */
+            UIBoxLine(
+                COLOR_FAIL,
+                "   ✗  %-16ls err %lu (%s)%s%ls",
+                ElevateTierName(tier),
+                (unsigned long)info->error,
+                *reason ? reason : "unknown",
+                info->note[0] ? " · " : "",
+                info->note);
+        }
+    }
+    UIBoxRule("├", "┤");
+    if (status->landed && status->tier >= 0) {
+        UIBoxLine(COLOR_OK_BG, " ✓ landed on %ls", ElevateTierName(status->tier));
+    } else {
+        UIBoxLine(COLOR_FAIL_BG, " ✗ no tier available — the engine will refuse to run");
+        if (!status->process.adminGroup) {
+            UIBoxLine(
+                COLOR_WARN,
+                "   this token has no enabled Administrators group, so UAC cannot grant admin:");
+            UIBoxLine(COLOR_WARN, "   start fuckAce.exe from a normal desktop session and accept the UAC prompt.");
+        }
+    }
+    UIBoxLine(
+        COLOR_HEAD,
+        " privilege enable: %s",
+        status->privilegeError == ERROR_SUCCESS ? "ok" : "failed");
+    if (status->privilegeError != ERROR_SUCCESS) {
+        UIBoxLine(COLOR_WARN, "   Error=%lu", (unsigned long)status->privilegeError);
+    }
+    UIBoxRule("└", "┘");
+    UIClearToEnd();
+}
+
+/* 提权后的子进程可能是独立控制台：它自己的报告留在那个窗口里，
+   父进程必须把结果和退出码再说一遍，否则用户只看到窗口一闪。 */
+void UIHandoffSummary(const ELEVATE_RESULT *result) {
+    SEG row[6];
+    int count = 0;
+    BOOL ok = result->exitCode == 0;
+
+    if (!result->detached) {
+        return;
+    }
+    putchar('\n');
+    UIBoxRule("┌", "┐");
+    UISegSet(&row[count++], ok ? COLOR_OK_BG : COLOR_FAIL_BG, " %ls instance finished",
+             result->tier == ELEVATE_TIER_ADMIN ? L"elevated" : ElevateTierName(result->tier));
+    UISegSet(&row[count++], COLOR_HEAD, "  pid %lu · exit code ", (unsigned long)result->pid);
+    UISegSet(&row[count++], ok ? COLOR_OK : COLOR_FAIL, "%lu", (unsigned long)result->exitCode);
+    UIBoxRow(count, row);
+    if (result->detached) {
+        UIBoxLine(COLOR_FRAME, " window above ran in its own console (UAC always does)");
+    }
+    UIBoxRule("└", "┘");
+    UIClearToEnd();
 }

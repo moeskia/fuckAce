@@ -2,6 +2,7 @@
 #include "config.h"
 #include "limiter.h"
 #include "ui.h"
+#include "elevate.h"
 
 static void TallyError(DWORD error, int *denied, int *unsupported, int *other) {
     if (error == ERROR_SUCCESS) {
@@ -36,16 +37,9 @@ int EngineRunOnce(BOOL isFirst) {
     int step;
 
     UIResetTiming();
-    if (!LimiterIsRunAsAdmin()) {
-        if (isFirst) {
-            UIClearScreen();
-        }
-        UILayoutConsole(4);
-        UIResetCursor();
-        UIBoxRule("┌", "┐");
-        UIBoxLine(COLOR_FAIL_BG, " ✗ administrator privileges required");
-        UIBoxRule("└", "┘");
-        UIClearToEnd();
+    if (!ElevateHasRights()) {
+        /* 提权链已经把每一档的失败原因记在 g_elevate 里，直接摊开给用户看。 */
+        UIElevationPanel(&g_elevate, NULL, "✗ administrator privileges required · rerun with --diagnose");
         return 1;
     }
 
@@ -54,7 +48,7 @@ int EngineRunOnce(BOOL isFirst) {
     if (isFirst) {
         UIClearScreen();
     }
-    UILayoutConsole(17 + 3 * (targetCount > 0 ? targetCount : 0));
+    UILayoutConsole(19 + 3 * (targetCount > 0 ? targetCount : 0));
     UIResetCursor();
 
     cpuCount = LimiterGetCpuCount(ALL_PROCESSOR_GROUPS);
@@ -86,6 +80,38 @@ int EngineRunOnce(BOOL isFirst) {
             UISegSet(&status[count++], COLOR_FRAME, "off");
         }
         UIBoxRow(count, status);
+    }
+    {
+        SEG token[10];
+        int count = 0;
+
+        /* 徽章只带前导空格（与上面 " ✓ admin" 一致），后面每一项自带 " · " 分隔，
+           这样就不会出现 "token  SYSTEM  impersonating" 这种双空格。 */
+        UISegSet(&token[count++], COLOR_HEAD, " token");
+        if (g_elevate.landed && g_elevate.tier >= 0) {
+            UISegSet(&token[count++], COLOR_OK_BG, " %ls", ElevateTierName(g_elevate.tier));
+        } else {
+            UISegSet(&token[count++], COLOR_WARN_BG, " none");
+        }
+        if (g_elevate.impersonating) {
+            UISegSet(&token[count++], COLOR_WARN, " · impersonating");
+        }
+        if (g_elevate.spawned) {
+            UISegSet(&token[count++], COLOR_FRAME, " · via parent token");
+        }
+        if (g_elevate.effective.account[0]) {
+            UISegSet(&token[count++], COLOR_WHITE, " · %ls", g_elevate.effective.account);
+        }
+        if (g_elevate.process.sessionId != 0xFFFFFFFFu) {
+            UISegSet(&token[count++], COLOR_HEAD, " · session %lu", (unsigned long)g_elevate.process.sessionId);
+        }
+        UIBoxRow(count, token);
+    }
+    if (g_elevate.mode != ELEVATE_MODE_OFF && !g_elevate.landed) {
+        UIBoxLine(COLOR_WARN, " ! escalation chain exhausted — continuing with the current token");
+    }
+    if (g_elevate.privilegeError != ERROR_SUCCESS) {
+        UIBoxLine(COLOR_WARN, " ! privilege enable failed (Error=%lu)", (unsigned long)g_elevate.privilegeError);
     }
     if (targetCount < 0) {
         UIBoxRule("├", "┤");

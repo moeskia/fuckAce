@@ -35,6 +35,30 @@ typedef struct _PROCESS_POWER_THROTTLING_STATE {
 #endif
 #endif
 
+#ifndef SE_IMPERSONATE_NAME
+#define SE_IMPERSONATE_NAME L"SeImpersonatePrivilege"
+#endif
+
+#ifndef SE_ASSIGNPRIMARYTOKEN_NAME
+#define SE_ASSIGNPRIMARYTOKEN_NAME L"SeAssignPrimaryTokenPrivilege"
+#endif
+
+#ifndef SE_INCREASE_QUOTA_NAME
+#define SE_INCREASE_QUOTA_NAME L"SeIncreaseQuotaPrivilege"
+#endif
+
+#ifndef SE_TAKE_OWNERSHIP_NAME
+#define SE_TAKE_OWNERSHIP_NAME L"SeTakeOwnershipPrivilege"
+#endif
+
+#ifndef SE_RESTORE_NAME
+#define SE_RESTORE_NAME L"SeRestorePrivilege"
+#endif
+
+#ifndef SE_BACKUP_NAME
+#define SE_BACKUP_NAME L"SeBackupPrivilege"
+#endif
+
 #ifndef JOB_OBJECT_CPU_RATE_CONTROL_ENABLE
 #define JOB_OBJECT_CPU_RATE_CONTROL_ENABLE 0x1
 #define JOB_OBJECT_CPU_RATE_CONTROL_WEIGHT_BASED 0x2
