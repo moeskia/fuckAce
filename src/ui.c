@@ -172,7 +172,7 @@ void UILayoutConsole(int contentRows) {
     currentHeight = info.srWindow.Bottom - info.srWindow.Top + 1;
     maximum = GetLargestConsoleWindowSize(g_console);
     wantedWidth = CONTENT_WIDTH;
-    wantedHeight = (contentRows + 4) * 3 / 4;
+    wantedHeight = contentRows + 1;
     if (wantedHeight < 18) {
         wantedHeight = 18;
     }
