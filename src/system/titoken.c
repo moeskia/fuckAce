@@ -1,3 +1,7 @@
+#include "system/titoken.h"
+
+#include <sddl.h>
+
 /* TrustedInstaller 令牌的构造：不碰系统上的任何持久状态，直接把
    NT SERVICE\TrustedInstaller 作为 SID 拼进一个新建令牌里。
 
@@ -8,11 +12,7 @@
    所有授予 TI 的 ACL 就都会对我们放行。
 
    NtCreateToken 需要一个只有 LocalSystem 才有的特权 SeCreateTokenPrivilege，
-   所以调用方必须先把线程切到 SYSTEM 身份上（elevate.c 里负责这件事）。 */
-
-#include "titoken.h"
-
-#include <sddl.h>
+   所以调用方必须先把线程切到 SYSTEM 身份上（elevation/ti.c 里负责这件事）。 */
 
 typedef NTSTATUS(NTAPI *NT_CREATE_TOKEN)(
     PHANDLE TokenHandle,

@@ -1,7 +1,7 @@
 #ifndef LIMITER_H
 #define LIMITER_H
 
-#include "common.h"
+#include "core/common.h"
 
 BOOL LimiterIsRunAsAdmin(void);
 BOOL LimiterEnableDebugPrivilege(DWORD *outError);

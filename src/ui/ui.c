@@ -1,5 +1,5 @@
-#include "ui.h"
-#include "elevate.h"
+#include "ui/ui.h"
+#include "elevation/elevate.h"
 
 static HANDLE g_console;
 static int g_width = 60;

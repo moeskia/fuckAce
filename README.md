@@ -149,6 +149,17 @@ SSDT 之外的影响：`SeImpersonatePrivilege`、`SeAssignPrimaryTokenPrivilege
 
 `--no-elevate` 可以整条链关掉，退回原来的“直接以当前权限跑”。链上每一档的成功/失败、来源进程 PID 和错误码都会画在界面上；全部失败时不会静默降级——引擎头部会打出 `token none` 并附 `! escalation chain exhausted`。
 
+## 源码结构
+
+```text
+src/
+├─ app/         入口、参数配置与主流程
+├─ core/        跨模块公共类型和常量
+├─ elevation/   提权 API、身份查询、令牌、服务与 TrustedInstaller
+├─ system/      进程限制与令牌构造
+└─ ui/          控制台界面
+tests/          集成测试入口
+```
 ## 构建
 
 需要 MinGW-w64（`gcc` 与 `windres` 在 PATH 中）：

@@ -1,7 +1,7 @@
 #ifndef ELEVATE_H
 #define ELEVATE_H
 
-#include "common.h"
+#include "core/common.h"
 
 /* 档位按“依次回退”顺序排列：TrustedInstaller 最高，admin 保底。 */
 enum {

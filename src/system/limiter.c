@@ -1,6 +1,6 @@
-#include "limiter.h"
-#include "config.h"
-#include "elevate.h"
+#include "system/limiter.h"
+#include "app/config.h"
+#include "elevation/elevate.h"
 
 static DWORD NtError(NTSTATUS status) {
     return (DWORD)RtlNtStatusToDosError(status);

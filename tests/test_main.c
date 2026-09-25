@@ -1,8 +1,8 @@
-#include "common.h"
-#include "config.h"
-#include "limiter.h"
-#include "elevate.h"
-#include "titoken.h"
+#include "core/common.h"
+#include "app/config.h"
+#include "system/limiter.h"
+#include "elevation/elevate.h"
+#include "system/titoken.h"
 
 static int g_failures;
 

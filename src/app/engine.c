@@ -1,8 +1,8 @@
-#include "engine.h"
-#include "config.h"
-#include "limiter.h"
-#include "ui.h"
-#include "elevate.h"
+#include "app/engine.h"
+#include "app/config.h"
+#include "system/limiter.h"
+#include "ui/ui.h"
+#include "elevation/elevate.h"
 
 static void TallyError(DWORD error, int *denied, int *unsupported, int *other) {
     if (error == ERROR_SUCCESS) {

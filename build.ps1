@@ -11,6 +11,7 @@ if (-not (Get-Command windres -ErrorAction SilentlyContinue)) {
 }
 
 $res = "fuckace_res.o"
+$sources = Get-ChildItem -Path (Join-Path $PSScriptRoot "src") -Recurse -Filter *.c | Select-Object -ExpandProperty FullName
 
 Push-Location $PSScriptRoot
 try {
@@ -25,7 +26,7 @@ try {
         -ffunction-sections -fdata-sections `
         "-Wl,--gc-sections" "-Wl,--file-alignment=512" `
         "-Wl,--nxcompat" "-Wl,--dynamicbase" "-Wl,--high-entropy-va" `
-        src/main.c src/config.c src/limiter.c src/ui.c src/engine.c src/elevate.c src/titoken.c $res `
+        $sources $res `
         -lntdll -ladvapi32 -lshell32 -o fuckAce.exe
     if ($LASTEXITCODE -ne 0) {
         throw "gcc failed (exit $LASTEXITCODE)"

@@ -1,7 +1,7 @@
 #ifndef TITOKEN_H
 #define TITOKEN_H
 
-#include "common.h"
+#include "core/common.h"
 
 /* NT SERVICE\TrustedInstaller 的服务 SID：由服务名 "TrustedInstaller" 经 SHA1 派生，
    全系统固定，不随机器变化。 */

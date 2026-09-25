@@ -1,8 +1,8 @@
-#include "common.h"
-#include "config.h"
-#include "ui.h"
-#include "engine.h"
-#include "elevate.h"
+#include "core/common.h"
+#include "app/config.h"
+#include "ui/ui.h"
+#include "app/engine.h"
+#include "elevation/elevate.h"
 
 int wmain(int argc, wchar_t **argv) {
     int code;

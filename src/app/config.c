@@ -1,5 +1,5 @@
-#include "config.h"
-#include "elevate.h"
+#include "app/config.h"
+#include "elevation/elevate.h"
 
 const char *const kStepHead[STEP_COUNT] = {
     "PRIO", "AFF", "ECO", "CAP", "IO", "MEM", "THR"

@@ -1,7 +1,7 @@
 #ifndef UI_H
 #define UI_H
 
-#include "common.h"
+#include "core/common.h"
 
 #define COLOR_DEFAULT 7
 #define COLOR_WHITE   (FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE | FOREGROUND_INTENSITY)

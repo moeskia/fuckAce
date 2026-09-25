@@ -1,7 +1,7 @@
 #ifndef CONFIG_H
 #define CONFIG_H
 
-#include "common.h"
+#include "core/common.h"
 
 /* TI 服务镜像劫持的强度。
    默认是 SAFE 而不是 OFF：TI 才是这套工具的默认档位，而 Windows 11 客户端上
