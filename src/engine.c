@@ -7,6 +7,9 @@ static void TallyError(DWORD error, int *denied, int *unsupported, int *other) {
     if (error == ERROR_SUCCESS) {
         return;
     }
+    if (error == ERROR_NOT_VERIFIABLE) {
+        return;
+    }
     if (error == ERROR_ACCESS_DENIED) {
         (*denied)++;
     } else if (error == ERROR_NOT_SUPPORTED) {
@@ -112,7 +115,7 @@ int EngineRunOnce(BOOL isFirst) {
         UIBoxRow(count, header);
     }
 
-    LimiterApplyBatch(targets, targetCount, affinity, g_config.cpuCapPercent, results);
+    LimiterApplyBatch(targets, targetCount, affinity, g_config.cpuCapPercent, g_config.cpuCapNest, results);
     {
         int foundCount = 0;
         int skippedCount = 0;
@@ -150,14 +153,14 @@ int EngineRunOnce(BOOL isFirst) {
                     continue;
                 }
                 TallyError(result->err[step], &deniedCount, &unsupportedCount, &otherErrorCount);
-                if (RESULT_OK(result, step)) {
+                if (RESULT_ACCEPTED(result, step)) {
                     applied[step]++;
                 }
             }
             if (result->capSkipped) {
-                if (result->capSkipErr == ERROR_ACCESS_DENIED) {
+                if (result->capSkipReason == CAP_SKIP_RIGHTS) {
                     capRightsSkipped++;
-                } else if (result->capSkipErr == ERROR_JOB_CONFLICT) {
+                } else if (result->capSkipReason == CAP_SKIP_JOB) {
                     capJobSkipped++;
                 } else {
                     capOtherSkipped++;

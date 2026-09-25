@@ -7,6 +7,7 @@ typedef struct _APP_CONFIG {
     const wchar_t *targetNames[MAX_TARGET_NAMES];
     int targetNameCount;
     DWORD cpuCapPercent;
+    BOOL cpuCapNest;
 } APP_CONFIG;
 
 extern APP_CONFIG g_config;

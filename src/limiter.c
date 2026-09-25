@@ -127,14 +127,27 @@ static BOOL SetEfficiencyMode(HANDLE process, DWORD *outError) {
         PROCESS_POWER_THROTTLING_EXECUTION_SPEED
     };
     PROCESS_POWER_THROTTLING_STATE check;
+    DWORD queryError;
 
     *outError = ERROR_SUCCESS;
     if (!SetProcessInformation(process, ProcessPowerThrottling, &state, sizeof(state))) {
         *outError = GetLastError();
         return FALSE;
     }
-    if (!GetProcessInformation(process, ProcessPowerThrottling, &check, sizeof(check)) ||
-        !(check.StateMask & PROCESS_POWER_THROTTLING_EXECUTION_SPEED)) {
+    memset(&check, 0, sizeof(check));
+    check.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
+    if (!GetProcessInformation(process, ProcessPowerThrottling, &check, sizeof(check))) {
+        queryError = GetLastError();
+        if (queryError == ERROR_INVALID_PARAMETER ||
+            queryError == ERROR_NOT_SUPPORTED ||
+            queryError == ERROR_INVALID_FUNCTION) {
+            *outError = ERROR_NOT_VERIFIABLE;
+            return TRUE;
+        }
+        *outError = queryError;
+        return FALSE;
+    }
+    if (!(check.StateMask & PROCESS_POWER_THROTTLING_EXECUTION_SPEED)) {
         *outError = ERROR_NOT_VERIFIED;
         return FALSE;
     }
@@ -216,7 +229,14 @@ static void BuildJobName(DWORD pid, const FILETIME *created, wchar_t *name, size
         (unsigned long)created->dwLowDateTime);
 }
 
-static BOOL ApplyCpuCap(HANDLE process, DWORD percent, DWORD *outError, BOOL *skipped) {
+static BOOL ApplyCpuCap(
+    HANDLE process,
+    DWORD percent,
+    BOOL allowNest,
+    DWORD *outError,
+    BOOL *skipped,
+    int *outSkipReason
+) {
     FILETIME created, exited, kernel, user;
     JOBOBJECT_CPU_RATE_CONTROL_INFORMATION info;
     JOBOBJECT_CPU_RATE_CONTROL_INFORMATION check;
@@ -228,6 +248,7 @@ static BOOL ApplyCpuCap(HANDLE process, DWORD percent, DWORD *outError, BOOL *sk
 
     *outError = ERROR_SUCCESS;
     *skipped = FALSE;
+    *outSkipReason = CAP_SKIP_NONE;
     if (!GetProcessTimes(process, &created, &exited, &kernel, &user)) {
         *outError = GetLastError();
         return FALSE;
@@ -241,22 +262,24 @@ static BOOL ApplyCpuCap(HANDLE process, DWORD percent, DWORD *outError, BOOL *sk
     if (!IsProcessInJob(process, NULL, &inAnyJob)) {
         *outError = ERROR_NOT_VERIFIED;
         *skipped = TRUE;
+        *outSkipReason = CAP_SKIP_UNVERIFIED;
         CloseHandle(job);
         return FALSE;
     }
-    if (inAnyJob) {
-        if (!IsProcessInJob(process, job, &inOurJob)) {
-            *outError = ERROR_NOT_VERIFIED;
-            *skipped = TRUE;
-            CloseHandle(job);
-            return FALSE;
-        }
-        if (!inOurJob) {
-            *outError = ERROR_JOB_CONFLICT;
-            *skipped = TRUE;
-            CloseHandle(job);
-            return FALSE;
-        }
+    if (!IsProcessInJob(process, job, &inOurJob)) {
+        *outError = ERROR_NOT_VERIFIED;
+        *skipped = TRUE;
+        *outSkipReason = CAP_SKIP_UNVERIFIED;
+        CloseHandle(job);
+        return FALSE;
+    }
+    if (inAnyJob && !inOurJob && !allowNest) {
+        /* Nested rate control compounds across runs, so nesting is opt-in. */
+        *outError = ERROR_JOB_CONFLICT;
+        *skipped = TRUE;
+        *outSkipReason = CAP_SKIP_JOB;
+        CloseHandle(job);
+        return FALSE;
     }
     memset(&info, 0, sizeof(info));
     info.ControlFlags = JOB_OBJECT_CPU_RATE_CONTROL_ENABLE | JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP;
@@ -266,10 +289,26 @@ static BOOL ApplyCpuCap(HANDLE process, DWORD percent, DWORD *outError, BOOL *sk
         CloseHandle(job);
         return FALSE;
     }
-    if (!inAnyJob && !AssignProcessToJobObject(job, process)) {
-        *outError = GetLastError();
-        CloseHandle(job);
-        return FALSE;
+    if (!inOurJob) {
+        /* Windows 8+ allows nesting: the process may already be in an external
+           job, so associate it with our job as a child of the existing one. */
+        if (!AssignProcessToJobObject(job, process)) {
+            *outError = GetLastError();
+            if (*outError == ERROR_SUCCESS) {
+                *outError = ERROR_NOT_VERIFIED;
+            }
+            *skipped = TRUE;
+            *outSkipReason = CAP_SKIP_JOB;
+            CloseHandle(job);
+            return FALSE;
+        }
+        if (!IsProcessInJob(process, job, &inOurJob) || !inOurJob) {
+            *outError = ERROR_NOT_VERIFIED;
+            *skipped = TRUE;
+            *outSkipReason = CAP_SKIP_UNVERIFIED;
+            CloseHandle(job);
+            return FALSE;
+        }
     }
     if (!QueryInformationJobObject(
             job, JobObjectCpuRateControlInformation, &check, sizeof(check), &returned) ||
@@ -475,6 +514,7 @@ void LimiterApplyBatch(
     int count,
     DWORD_PTR affinityMask,
     DWORD cpuCapPercent,
+    BOOL allowNest,
     PROCESS_RESULT *results
 ) {
     HANDLE processes[MAX_TARGETS];
@@ -543,16 +583,19 @@ void LimiterApplyBatch(
                 (PROCESS_SET_QUOTA | PROCESS_TERMINATE)) {
                 results[i].capSkipped = TRUE;
                 results[i].capSkipErr = ERROR_ACCESS_DENIED;
+                results[i].capSkipReason = CAP_SKIP_RIGHTS;
             } else {
                 BOOL skipped = FALSE;
+                int reason = CAP_SKIP_NONE;
                 results[i].attempted[STEP_CAP] = TRUE;
                 if (!ApplyCpuCap(
-                        processes[i], cpuCapPercent,
-                        &results[i].err[STEP_CAP], &skipped)) {
+                        processes[i], cpuCapPercent, allowNest,
+                        &results[i].err[STEP_CAP], &skipped, &reason)) {
                     if (skipped) {
                         results[i].attempted[STEP_CAP] = FALSE;
                         results[i].capSkipped = TRUE;
                         results[i].capSkipErr = results[i].err[STEP_CAP];
+                        results[i].capSkipReason = reason;
                         results[i].err[STEP_CAP] = ERROR_SUCCESS;
                     }
                 }

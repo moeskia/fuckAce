@@ -104,6 +104,8 @@ static const char *UIShortReason(DWORD error) {
         return "partial copy";
     case ERROR_NOT_VERIFIED:
         return "not applied";
+    case ERROR_NOT_VERIFIABLE:
+        return "set, not verifiable";
     case ERROR_JOB_CONFLICT:
         return "job conflict";
     }
@@ -435,6 +437,9 @@ static void UISegCell(SEG *segment, BOOL attempted, DWORD error) {
     } else if (error == ERROR_SUCCESS) {
         snprintf(body, sizeof(body), "OK");
         color = COLOR_OK_BG;
+    } else if (error == ERROR_NOT_VERIFIABLE) {
+        snprintf(body, sizeof(body), "OK~");
+        color = COLOR_WARN;
     } else if (error == ERROR_NOT_VERIFIED) {
         snprintf(body, sizeof(body), "✗nv");
         color = COLOR_FAIL_BG;
@@ -486,6 +491,9 @@ static void UIAddStepError(
         UIAddNote(note, size, position, "thr %d/%d", result->thrSet, result->thrTotal);
     } else if (step == STEP_IO && result->ioThreadFailed) {
         UIAddNote(note, size, position, "io %d/%d", result->ioThrSet, result->ioThrTotal);
+    } else if (result->err[step] == ERROR_NOT_VERIFIABLE) {
+        UIAddNote(note, size, position, "%s:set(unverified)", kStepShort[step]);
+        return;
     } else if (result->err[step] == ERROR_NOT_VERIFIED) {
         UIAddNote(note, size, position, "%s:nv", kStepShort[step]);
         return;
@@ -529,28 +537,46 @@ void UIReportProcess(int index, const TARGET *target, const PROCESS_RESULT *resu
         UIBoxWrap(COLOR_WARN, note);
         return;
     }
-    if (result->capSkipped || ResultState(result) != RESULT_FULL) {
-        char note[512] = "";
-        size_t position = 0;
+    {
+        BOOL unverifiable = FALSE;
 
-        if (result->capSkipped) {
-            if (result->capSkipErr == ERROR_ACCESS_DENIED) {
-                UIAddNote(note, sizeof(note), &position, "cap skipped(insufficient rights)");
-            } else if (result->capSkipErr == ERROR_JOB_CONFLICT) {
-                UIAddNote(note, sizeof(note), &position, "cap skipped(existing job)");
-            } else {
-                UIAddNote(note, sizeof(note), &position, "cap skipped(not verified)");
-            }
-        }
         for (step = 0; step < STEP_COUNT; step++) {
-            if (!result->attempted[step] || RESULT_OK(result, step)) {
-                continue;
+            if (result->attempted[step] && result->err[step] == ERROR_NOT_VERIFIABLE) {
+                unverifiable = TRUE;
             }
-            if (position) {
-                UIAddNote(note, sizeof(note), &position, " · ");
-            }
-            UIAddStepError(note, sizeof(note), &position, step, result);
         }
-        UIBoxWrap(COLOR_WARN, note);
+        if (result->capSkipped || unverifiable || ResultState(result) != RESULT_FULL) {
+            char note[512] = "";
+            size_t position = 0;
+
+            if (result->capSkipped) {
+                if (result->capSkipReason == CAP_SKIP_RIGHTS) {
+                    UIAddNote(note, sizeof(note), &position, "cap skipped(insufficient rights)");
+                } else if (result->capSkipReason == CAP_SKIP_JOB) {
+                    if (result->capSkipErr == ERROR_JOB_CONFLICT) {
+                        UIAddNote(note, sizeof(note), &position, "cap skipped(existing job)");
+                    } else {
+                        UIAddNote(
+                            note,
+                            sizeof(note),
+                            &position,
+                            "cap skipped(cannot nest, err %lu)",
+                            (unsigned long)result->capSkipErr);
+                    }
+                } else {
+                    UIAddNote(note, sizeof(note), &position, "cap skipped(not verified)");
+                }
+            }
+            for (step = 0; step < STEP_COUNT; step++) {
+                if (!result->attempted[step] || RESULT_OK(result, step)) {
+                    continue;
+                }
+                if (position) {
+                    UIAddNote(note, sizeof(note), &position, " · ");
+                }
+                UIAddStepError(note, sizeof(note), &position, step, result);
+            }
+            UIBoxWrap(COLOR_WARN, note);
+        }
     }
 }

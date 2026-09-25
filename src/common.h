@@ -47,6 +47,7 @@ typedef struct _PROCESS_POWER_THROTTLING_STATE {
 
 #define ERROR_NOT_VERIFIED 0x20000001
 #define ERROR_JOB_CONFLICT 0x20000002
+#define ERROR_NOT_VERIFIABLE 0x20000003
 
 #define STEP_COUNT 7
 #define MAX_TARGETS 256
@@ -72,6 +73,13 @@ enum {
     RESULT_FULL
 };
 
+enum {
+    CAP_SKIP_NONE = 0,
+    CAP_SKIP_RIGHTS,
+    CAP_SKIP_JOB,
+    CAP_SKIP_UNVERIFIED
+};
+
 extern const char *const kStepHead[STEP_COUNT];
 extern const char *const kStepShort[STEP_COUNT];
 
@@ -93,9 +101,13 @@ typedef struct _PROCESS_RESULT {
     BOOL ioThreadFailed;
     BOOL capSkipped;
     DWORD capSkipErr;
+    int capSkipReason;
 } PROCESS_RESULT;
 
 #define RESULT_OK(result, step) ((result)->attempted[step] && (result)->err[step] == ERROR_SUCCESS)
+#define RESULT_ACCEPTED(result, step) \
+    ((result)->attempted[step] && \
+     ((result)->err[step] == ERROR_SUCCESS || (result)->err[step] == ERROR_NOT_VERIFIABLE))
 
 
 static inline int ResultState(const PROCESS_RESULT *result) {
@@ -105,7 +117,7 @@ static inline int ResultState(const PROCESS_RESULT *result) {
 
     for (step = 0; step < STEP_COUNT; step++) {
         attempted += result->attempted[step] != FALSE;
-        succeeded += RESULT_OK(result, step);
+        succeeded += RESULT_ACCEPTED(result, step);
     }
     if (attempted > 0 && attempted == succeeded) {
         return RESULT_FULL;

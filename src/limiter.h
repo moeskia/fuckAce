@@ -13,6 +13,7 @@ void LimiterApplyBatch(
     int count,
     DWORD_PTR affinityMask,
     DWORD cpuCapPercent,
+    BOOL allowNest,
     PROCESS_RESULT *results
 );
 

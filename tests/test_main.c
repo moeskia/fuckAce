@@ -37,6 +37,8 @@ static void TestConfig(void) {
     const wchar_t *overArgs[] = {L"--rate=101"};
     const wchar_t *disabledThenRate[] = {L"--no-cap", L"--rate=9"};
     const wchar_t *rateThenDisabled[] = {L"--rate=9", L"--no-cap"};
+    const wchar_t *nestArgs[] = {L"--nest"};
+    const wchar_t *rateThenNest[] = {L"--rate=9", L"--nest"};
     const wchar_t *name31[] = {L"1234567890123456789012345678901"};
     const wchar_t *name32[] = {L"12345678901234567890123456789012"};
     const wchar_t *many[31];
@@ -45,7 +47,10 @@ static void TestConfig(void) {
 
     CHECK(ParseArgs(NULL, 0), L"default parse failed");
     CHECK(g_config.cpuCapPercent == DEFAULT_CPU_CAP, L"default rate mismatch");
+    CHECK(!g_config.cpuCapNest, L"nest should be off by default");
     CHECK(g_config.targetNameCount == 2, L"default targets mismatch");
+    CHECK(ParseArgs(nestArgs, 1) && g_config.cpuCapNest, L"--nest not parsed");
+    CHECK(ParseArgs(rateThenNest, 2) && g_config.cpuCapNest, L"--nest after --rate not parsed");
     CHECK(ParseArgs(zeroArgs, 1) && g_config.cpuCapPercent == 0, L"rate=0 mismatch");
     CHECK(ParseArgs(maxArgs, 1) && g_config.cpuCapPercent == 100, L"rate=100 mismatch");
     CHECK(ParseArgs(overArgs, 1) && g_config.cpuCapPercent == 100, L"rate>100 not clamped");
@@ -88,19 +93,18 @@ static void TestResultState(void) {
         result.attempted[step] = step != STEP_CAP;
     }
     CHECK(ResultState(&result) == RESULT_FULL, L"skipped cap state mismatch");
+    memset(&result, 0, sizeof(result));
+    result.attempted[STEP_ECO] = TRUE;
+    result.err[STEP_ECO] = ERROR_NOT_VERIFIABLE;
+    CHECK(ResultState(&result) == RESULT_FULL, L"unverifiable result state mismatch");
+    result.attempted[STEP_PRI] = TRUE;
+    result.err[STEP_PRI] = ERROR_ACCESS_DENIED;
+    CHECK(ResultState(&result) == RESULT_PARTIAL, L"unverifiable+failed state mismatch");
     CHECK(SummaryExitCode(0, 0, 0) == 1, L"exit code 1 mismatch");
     CHECK(SummaryExitCode(1, 1, 0) == 0, L"exit code 0 mismatch");
     CHECK(SummaryExitCode(2, 1, 1) == 2, L"exit code 2 mismatch");
     CHECK(SummaryExitCode(1, 0, 0) == 3, L"exit code 3 mismatch");
-    LimiterApplyBatch(NULL, 0, 0, 0, NULL);
-}
-
-static void BuildJobName(DWORD pid, const FILETIME *created, wchar_t *name, size_t size) {
-    swprintf(
-        name, size, L"Local\\fuckAce_%lu_%08lX%08lX",
-        (unsigned long)pid,
-        (unsigned long)created->dwHighDateTime,
-        (unsigned long)created->dwLowDateTime);
+    LimiterApplyBatch(NULL, 0, 0, 0, FALSE, NULL);
 }
 
 static BOOL SpawnChild(wchar_t *path, size_t pathSize, PROCESS_INFORMATION *process, BOOL *breakaway) {
@@ -136,16 +140,11 @@ static void CloseProcess(PROCESS_INFORMATION *process) {
 static void TestChildBatch(void) {
     wchar_t path[1024];
     wchar_t *base;
-    wchar_t jobName[96];
-    FILETIME created, exited, kernel, user;
     PROCESS_INFORMATION process;
-    HANDLE job;
     BOOL breakaway;
     TARGET target;
     PROCESS_RESULT first;
     PROCESS_RESULT second;
-    JOBOBJECT_CPU_RATE_CONTROL_INFORMATION rate;
-    DWORD returned = 0;
 
     if (!SpawnChild(path, sizeof(path) / sizeof(path[0]), &process, &breakaway)) {
         CHECK(FALSE, L"failed to spawn test child");
@@ -161,46 +160,31 @@ static void TestChildBatch(void) {
         1,
         LimiterGetLastCpuAffinityMask(LimiterGetCpuCount(0)),
         3,
+        TRUE,
         &first);
     CHECK(first.opened, L"child process was not opened");
     CHECK(!first.stale, L"child process was marked stale");
-    CHECK(ResultState(&first) != RESULT_FAILED, L"no child setting succeeded");
-    if (RESULT_OK(&first, STEP_CAP)) {
-        CHECK(GetProcessTimes(process.hProcess, &created, &exited, &kernel, &user), L"GetProcessTimes failed");
-        BuildJobName(process.dwProcessId, &created, jobName, sizeof(jobName) / sizeof(jobName[0]));
-        job = OpenJobObjectW(JOB_OBJECT_QUERY, FALSE, jobName);
-        CHECK(job != NULL, L"named job was not retained");
-        if (job) {
-            CHECK(
-                QueryInformationJobObject(
-                    job, JobObjectCpuRateControlInformation, &rate, sizeof(rate), &returned),
-                L"query job failed");
-            CHECK(
-                returned >= sizeof(rate) &&
-                (rate.ControlFlags & JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP) != 0,
-                L"job hard cap missing");
-            CloseHandle(job);
-        }
-        LimiterApplyBatch(
-            &target,
-            1,
-            LimiterGetLastCpuAffinityMask(LimiterGetCpuCount(0)),
-            3,
-            &second);
-        CHECK(RESULT_OK(&second, STEP_CAP), L"job reuse did not retain cap");
-    } else {
-        CHECK(first.capSkipped, L"cap failed instead of being skipped");
-    }
+    CHECK(ResultState(&first) == RESULT_FULL, L"child was not fully configured");
+    CHECK(RESULT_OK(&first, STEP_CAP), L"child CPU cap was not applied");
+    LimiterApplyBatch(
+        &target,
+        1,
+        LimiterGetLastCpuAffinityMask(LimiterGetCpuCount(0)),
+        3,
+        TRUE,
+        &second);
+    CHECK(RESULT_OK(&second, STEP_CAP), L"child CPU cap was not reapplied");
     ResumeThread(process.hThread);
     CloseProcess(&process);
 }
 
-static void TestExternalJob(void) {
+static void TestExternalJob(BOOL allowNest) {
     wchar_t path[1024];
     wchar_t *base;
     PROCESS_INFORMATION process;
     HANDLE job;
     BOOL breakaway;
+    BOOL inExternal = FALSE;
     TARGET target;
     PROCESS_RESULT result;
     int step;
@@ -228,15 +212,23 @@ static void TestExternalJob(void) {
         1,
         LimiterGetLastCpuAffinityMask(LimiterGetCpuCount(0)),
         3,
+        allowNest,
         &result);
     CHECK(result.opened && !result.stale, L"external-job child open mismatch");
-    CHECK(result.capSkipped, L"external job was not skipped");
-    CHECK(result.capSkipErr == ERROR_JOB_CONFLICT, L"external job error mismatch");
-    for (step = 0; step < STEP_COUNT; step++) {
-        if (step != STEP_CAP) {
-            CHECK(result.attempted[step], L"external job blocked another step");
-        }
+    if (allowNest) {
+        CHECK(!result.capSkipped, L"nesting was requested but the cap was skipped");
+        CHECK(RESULT_OK(&result, STEP_CAP), L"nested cap was not applied");
+    } else {
+        CHECK(result.capSkipped, L"external job without nesting was not skipped");
+        CHECK(result.capSkipErr == ERROR_JOB_CONFLICT, L"external job skip error mismatch");
     }
+    for (step = 0; step < STEP_COUNT; step++) {
+        if (step == STEP_CAP && !allowNest) {
+            continue;
+        }
+        CHECK(result.attempted[step], L"external job blocked another step");
+    }
+    CHECK(IsProcessInJob(process.hProcess, job, &inExternal) && inExternal, L"process left the external job");
     CloseProcess(&process);
     CloseHandle(job);
 }
@@ -249,12 +241,12 @@ static void TestFailures(void) {
     memset(&target, 0, sizeof(target));
     target.pid = 0xFFFFFFF0u;
     wcscpy(target.name, L"missing.exe");
-    LimiterApplyBatch(&target, 1, 1, 3, &result);
+    LimiterApplyBatch(&target, 1, 1, 3, FALSE, &result);
     CHECK(!result.opened, L"missing process opened");
     CHECK(!result.stale, L"missing process marked stale");
     target.pid = GetCurrentProcessId();
     wcscpy(target.name, L"not-this-process.exe");
-    LimiterApplyBatch(&target, 1, 1, 0, &result);
+    LimiterApplyBatch(&target, 1, 1, 0, FALSE, &result);
     CHECK(result.stale, L"identity mismatch was not marked stale");
     LimiterEnableDebugPrivilege(&ignored);
 }
@@ -268,7 +260,8 @@ int wmain(int argc, wchar_t **argv) {
     TestResultState();
     TestFailures();
     TestChildBatch();
-    TestExternalJob();
+    TestExternalJob(FALSE);
+    TestExternalJob(TRUE);
     if (g_failures) {
         fwprintf(stderr, L"%d test(s) failed\n", g_failures);
         return 1;

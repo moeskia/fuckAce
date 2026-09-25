@@ -54,6 +54,10 @@ BOOL ConfigParseArgs(int argc, wchar_t **argv) {
             g_config.cpuCapPercent = 0;
             continue;
         }
+        if (_wcsicmp(argv[i], L"--nest") == 0) {
+            g_config.cpuCapNest = TRUE;
+            continue;
+        }
         if (wcsncmp(argv[i], L"--rate=", 7) == 0) {
             const wchar_t *text = argv[i] + 7;
             const wchar_t *cursor;
@@ -88,7 +92,7 @@ BOOL ConfigParseArgs(int argc, wchar_t **argv) {
         }
         if (argv[i][0] == L'-') {
             fwprintf(stderr, L"unknown option: %ls\n", argv[i]);
-            fwprintf(stderr, L"usage: fuckAce [--rate=PERCENT] [--no-cap] [process.exe ...]\n");
+            fwprintf(stderr, L"usage: fuckAce [--rate=PERCENT] [--no-cap] [--nest] [process.exe ...]\n");
             fflush(stderr);
             return FALSE;
         }
