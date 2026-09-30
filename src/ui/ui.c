@@ -577,22 +577,7 @@ void UIReportProcess(int index, const TARGET *target, const PROCESS_RESULT *resu
             size_t position = 0;
 
             if (result->capSkipped) {
-                if (result->capSkipReason == CAP_SKIP_RIGHTS) {
-                    UIAddNote(note, sizeof(note), &position, "cap skipped(insufficient rights)");
-                } else if (result->capSkipReason == CAP_SKIP_JOB) {
-                    if (result->capSkipErr == ERROR_JOB_CONFLICT) {
-                        UIAddNote(note, sizeof(note), &position, "cap skipped(existing job)");
-                    } else {
-                        UIAddNote(
-                            note,
-                            sizeof(note),
-                            &position,
-                            "cap skipped(cannot nest, err %lu)",
-                            (unsigned long)result->capSkipErr);
-                    }
-                } else {
-                    UIAddNote(note, sizeof(note), &position, "cap skipped(not verified)");
-                }
+                UIAddNote(note, sizeof(note), &position, "cap skipped(insufficient rights)");
             }
             for (step = 0; step < STEP_COUNT; step++) {
                 if (!result->attempted[step] || RESULT_OK(result, step)) {

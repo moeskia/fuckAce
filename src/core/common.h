@@ -104,13 +104,6 @@ enum {
     RESULT_FULL
 };
 
-enum {
-    CAP_SKIP_NONE = 0,
-    CAP_SKIP_RIGHTS,
-    CAP_SKIP_JOB,
-    CAP_SKIP_UNVERIFIED
-};
-
 extern const char *const kStepHead[STEP_COUNT];
 extern const char *const kStepShort[STEP_COUNT];
 
@@ -131,8 +124,6 @@ typedef struct _PROCESS_RESULT {
     int ioThrTotal;
     BOOL ioThreadFailed;
     BOOL capSkipped;
-    DWORD capSkipErr;
-    int capSkipReason;
 } PROCESS_RESULT;
 
 #define RESULT_OK(result, step) ((result)->attempted[step] && (result)->err[step] == ERROR_SUCCESS)

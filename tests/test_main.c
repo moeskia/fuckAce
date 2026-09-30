@@ -26,21 +26,22 @@ static BOOL ParseArgs(const wchar_t **args, int count) {
 }
 
 static void TestConfig(void) {
-    const wchar_t *emptyArgs[] = {L"--rate="};
-    const wchar_t *plusArgs[] = {L"--rate=+1"};
-    const wchar_t *minusArgs[] = {L"--rate=-1"};
-    const wchar_t *mixedArgs[] = {L"--rate=1x"};
-    const wchar_t *leadingSpaceArgs[] = {L"--rate= 1"};
-    const wchar_t *trailingSpaceArgs[] = {L"--rate=1 "};
-    const wchar_t *hexArgs[] = {L"--rate=0x10"};
-    const wchar_t *hugeArgs[] = {L"--rate=999999999999999999999999999999"};
-    const wchar_t *zeroArgs[] = {L"--rate=0"};
-    const wchar_t *maxArgs[] = {L"--rate=100"};
-    const wchar_t *overArgs[] = {L"--rate=101"};
-    const wchar_t *disabledThenRate[] = {L"--no-cap", L"--rate=9"};
-    const wchar_t *rateThenDisabled[] = {L"--rate=9", L"--no-cap"};
-    const wchar_t *nestArgs[] = {L"--nest"};
-    const wchar_t *rateThenNest[] = {L"--rate=9", L"--nest"};
+    const wchar_t *removed[] = {
+        L"--rate=9",
+        L"--no-cap",
+        L"--nest",
+        L"--as=ti",
+        L"--no-elevate",
+        L"--no-fallback",
+        L"--keep-ti",
+        L"--no-service",
+        L"--no-ti-forge",
+        L"--ti-hijack",
+        L"--no-ti-hijack",
+        L"--spawn",
+        L"--impersonate"
+    };
+    const wchar_t *diagnoseArgs[] = {L"--diagnose"};
     const wchar_t *name31[] = {L"1234567890123456789012345678901"};
     const wchar_t *name32[] = {L"12345678901234567890123456789012"};
     const wchar_t *many[31];
@@ -48,24 +49,11 @@ static void TestConfig(void) {
     int i;
 
     CHECK(ParseArgs(NULL, 0), L"default parse failed");
-    CHECK(g_config.cpuCapPercent == DEFAULT_CPU_CAP, L"default rate mismatch");
-    CHECK(!g_config.cpuCapNest, L"nest should be off by default");
     CHECK(g_config.targetNameCount == 2, L"default targets mismatch");
-    CHECK(ParseArgs(nestArgs, 1) && g_config.cpuCapNest, L"--nest not parsed");
-    CHECK(ParseArgs(rateThenNest, 2) && g_config.cpuCapNest, L"--nest after --rate not parsed");
-    CHECK(ParseArgs(zeroArgs, 1) && g_config.cpuCapPercent == 0, L"rate=0 mismatch");
-    CHECK(ParseArgs(maxArgs, 1) && g_config.cpuCapPercent == 100, L"rate=100 mismatch");
-    CHECK(ParseArgs(overArgs, 1) && g_config.cpuCapPercent == 100, L"rate>100 not clamped");
-    CHECK(ParseArgs(hugeArgs, 1) && g_config.cpuCapPercent == 100, L"huge rate not clamped");
-    CHECK(ParseArgs(disabledThenRate, 2) && g_config.cpuCapPercent == 9, L"option precedence mismatch");
-    CHECK(ParseArgs(rateThenDisabled, 2) && g_config.cpuCapPercent == 0, L"option precedence mismatch");
-    CHECK(!ParseArgs(emptyArgs, 1), L"empty rate accepted");
-    CHECK(!ParseArgs(plusArgs, 1), L"signed rate accepted");
-    CHECK(!ParseArgs(minusArgs, 1), L"negative rate accepted");
-    CHECK(!ParseArgs(mixedArgs, 1), L"mixed rate accepted");
-    CHECK(!ParseArgs(leadingSpaceArgs, 1), L"leading space accepted");
-    CHECK(!ParseArgs(trailingSpaceArgs, 1), L"trailing space accepted");
-    CHECK(!ParseArgs(hexArgs, 1), L"hex rate accepted");
+    CHECK(ParseArgs(diagnoseArgs, 1) && g_config.diagnose, L"--diagnose not parsed");
+    for (i = 0; i < (int)(sizeof(removed) / sizeof(removed[0])); i++) {
+        CHECK(!ParseArgs(&removed[i], 1), L"removed option still accepted");
+    }
     CHECK(ParseArgs(name31, 1) && g_config.targetNameCount == 3, L"31-char target rejected");
     CHECK(!ParseArgs(name32, 1), L"32-char target accepted");
     for (i = 0; i < 31; i++) {
@@ -77,70 +65,22 @@ static void TestConfig(void) {
 }
 
 static void TestElevateConfig(void) {
-    const wchar_t *noElevate[] = {L"--no-elevate"};
-    const wchar_t *asTi[] = {L"--as=ti"};
-    const wchar_t *asTiLong[] = {L"--as=TrustedInstaller"};
-    const wchar_t *asSystem[] = {L"--as=system"};
-    const wchar_t *asAdmin[] = {L"--as=admin"};
-    const wchar_t *asAuto[] = {L"--as=auto"};
-    const wchar_t *asOff[] = {L"--as=off"};
-    const wchar_t *asBad[] = {L"--as=root"};
-    const wchar_t *asEmpty[] = {L"--as="};
-    const wchar_t *noFallback[] = {L"--no-fallback"};
-    const wchar_t *spawnArgs[] = {L"--spawn"};
-    const wchar_t *impersonateArgs[] = {L"--impersonate"};
-    const wchar_t *keepTi[] = {L"--keep-ti"};
     const wchar_t *escalated[] = {L"--escalated=1"};
     const wchar_t *escalatedBad[] = {L"--escalated=x"};
     const wchar_t *escalatedRange[] = {L"--escalated=3"};
     const wchar_t *escalatedEmpty[] = {L"--escalated="};
-    const wchar_t *diagnoseArgs[] = {L"--diagnose"};
-    const wchar_t *noService[] = {L"--no-service"};
-    const wchar_t *noTiForge[] = {L"--no-ti-forge"};
-    const wchar_t *tiHijack[] = {L"--ti-hijack"};
-    const wchar_t *noTiHijack[] = {L"--no-ti-hijack"};
-    const wchar_t *hijackThenOff[] = {L"--ti-hijack", L"--no-ti-hijack"};
-    const wchar_t *offThenHijack[] = {L"--no-ti-hijack", L"--ti-hijack"};
-    const wchar_t *mixed[] = {L"--no-elevate", L"--as=system"};
 
     CHECK(ParseArgs(NULL, 0), L"elevate default parse failed");
     CHECK(g_config.elevateMode == ELEVATE_MODE_AUTO, L"elevate default mode mismatch");
     CHECK(g_config.elevateUse == ELEVATE_USE_AUTO, L"elevate default use mismatch");
     CHECK(g_config.elevateFallback, L"fallback should default on");
-    CHECK(g_config.escalatedTier == ELEVATE_TIER_NONE, L"escalated default mismatch");
-    CHECK(!g_config.elevateKeepService, L"keep-ti should default off");
-    CHECK(!g_config.diagnose, L"diagnose should default off");
-    CHECK(ParseArgs(diagnoseArgs, 1) && g_config.diagnose, L"--diagnose not parsed");
     CHECK(g_config.elevateServiceDonor, L"service donor should default on");
-    CHECK(ParseArgs(noService, 1) && !g_config.elevateServiceDonor, L"--no-service not parsed");
-    /* 默认档位就是 TI，而 Windows 11 客户端上只有劫持能拿到 TI，
-       所以默认值是 SAFE（只在服务已经停下来时劫持），不是 OFF。 */
     CHECK(g_config.tiForge, L"TI forge should default on");
-    CHECK(g_config.tiHijack == TI_HIJACK_SAFE, L"TI hijack should default to SAFE");
-    CHECK(ParseArgs(noTiForge, 1) && !g_config.tiForge, L"--no-ti-forge not parsed");
-    CHECK(ParseArgs(tiHijack, 1) && g_config.tiHijack == TI_HIJACK_FORCE, L"--ti-hijack not parsed");
-    CHECK(ParseArgs(tiHijack, 1) && g_config.tiForge, L"--ti-hijack must not disable forge");
-    CHECK(ParseArgs(noTiHijack, 1) && g_config.tiHijack == TI_HIJACK_OFF, L"--no-ti-hijack not parsed");
-    CHECK(ParseArgs(hijackThenOff, 2) && g_config.tiHijack == TI_HIJACK_OFF, L"last hijack switch should win");
-    CHECK(ParseArgs(offThenHijack, 2) && g_config.tiHijack == TI_HIJACK_FORCE, L"last hijack switch should win");
-
-    CHECK(ParseArgs(noElevate, 1) && g_config.elevateMode == ELEVATE_MODE_OFF, L"--no-elevate not parsed");
-    CHECK(ParseArgs(asTi, 1) && g_config.elevateMode == ELEVATE_TIER_TI, L"--as=ti not parsed");
-    CHECK(ParseArgs(asTiLong, 1) && g_config.elevateMode == ELEVATE_TIER_TI, L"--as=TrustedInstaller not parsed");
-    CHECK(ParseArgs(asSystem, 1) && g_config.elevateMode == ELEVATE_TIER_SYSTEM, L"--as=system not parsed");
-    CHECK(ParseArgs(asAdmin, 1) && g_config.elevateMode == ELEVATE_TIER_ADMIN, L"--as=admin not parsed");
-    CHECK(ParseArgs(asAuto, 1) && g_config.elevateMode == ELEVATE_MODE_AUTO, L"--as=auto not parsed");
-    CHECK(ParseArgs(asOff, 1) && g_config.elevateMode == ELEVATE_MODE_OFF, L"--as=off not parsed");
-    CHECK(ParseArgs(noFallback, 1) && !g_config.elevateFallback, L"--no-fallback not parsed");
-    CHECK(ParseArgs(spawnArgs, 1) && g_config.elevateUse == ELEVATE_USE_SPAWN, L"--spawn not parsed");
-    CHECK(
-        ParseArgs(impersonateArgs, 1) && g_config.elevateUse == ELEVATE_USE_IMPERSONATE,
-        L"--impersonate not parsed");
-    CHECK(ParseArgs(keepTi, 1) && g_config.elevateKeepService, L"--keep-ti not parsed");
+    CHECK(g_config.tiHijack == TI_HIJACK_FORCE, L"TI hijack should default to FORCE");
+    CHECK(!g_config.elevateKeepService, L"keep-ti should default off");
+    CHECK(g_config.escalatedTier == ELEVATE_TIER_NONE, L"escalated default mismatch");
+    CHECK(!g_config.diagnose, L"diagnose should default off");
     CHECK(ParseArgs(escalated, 1) && g_config.escalatedTier == 1, L"--escalated=1 not parsed");
-    CHECK(ParseArgs(mixed, 2) && g_config.elevateMode == ELEVATE_TIER_SYSTEM, L"last --as should win");
-    CHECK(!ParseArgs(asBad, 1), L"bad --as accepted");
-    CHECK(!ParseArgs(asEmpty, 1), L"empty --as accepted");
     CHECK(!ParseArgs(escalatedBad, 1), L"bad --escalated accepted");
     CHECK(!ParseArgs(escalatedRange, 1), L"out-of-range --escalated accepted");
     CHECK(!ParseArgs(escalatedEmpty, 1), L"empty --escalated accepted");
@@ -177,16 +117,15 @@ static void TestElevateTiers(void) {
 }
 
 static void TestElevateOff(void) {
-    const wchar_t *args[] = {L"--no-elevate"};
-    wchar_t *argv[2];
+    wchar_t *argv[1];
     ELEVATE_RESULT result;
 
     argv[0] = L"fuckAce.exe";
-    argv[1] = (wchar_t *)args[0];
-    CHECK(ParseArgs(args, 1), L"--no-elevate parse failed");
+    ConfigInit();
+    g_config.elevateMode = ELEVATE_MODE_OFF;
     memset(&result, 0, sizeof(result));
     result.tier = ELEVATE_TIER_NONE;
-    CHECK(ElevateRun(2, argv, &result), L"ElevateRun(--no-elevate) failed");
+    CHECK(ElevateRun(1, argv, &result), L"ElevateRun(OFF) failed");
     CHECK(!result.handoff, L"off mode should never hand off");
     CHECK(g_elevate.mode == ELEVATE_MODE_OFF, L"off mode not recorded");
     CHECK(g_elevate.process.valid, L"off mode identity invalid");
@@ -195,21 +134,20 @@ static void TestElevateOff(void) {
 }
 
 static void TestElevateSingleTier(void) {
-    const wchar_t *args[] = {L"--as=ti", L"--no-fallback"};
-    wchar_t *argv[3];
+    wchar_t *argv[1];
     ELEVATE_RESULT result;
     BOOL isAdmin;
 
     argv[0] = L"fuckAce.exe";
-    argv[1] = (wchar_t *)args[0];
-    argv[2] = (wchar_t *)args[1];
-    CHECK(ParseArgs(args, 2), L"--as=ti parse failed");
+    ConfigInit();
+    g_config.elevateMode = ELEVATE_TIER_TI;
+    g_config.elevateFallback = FALSE;
     memset(&result, 0, sizeof(result));
     result.tier = ELEVATE_TIER_NONE;
-    CHECK(ElevateRun(3, argv, &result), L"ElevateRun(--as=ti) failed");
+    CHECK(ElevateRun(1, argv, &result), L"ElevateRun(single tier) failed");
     CHECK(g_elevate.tiers[ELEVATE_TIER_TI].tried, L"TI tier not attempted");
-    CHECK(!g_elevate.tiers[ELEVATE_TIER_SYSTEM].tried, L"fallback ran despite --no-fallback");
-    CHECK(!g_elevate.tiers[ELEVATE_TIER_ADMIN].tried, L"admin tier ran despite --no-fallback");
+    CHECK(!g_elevate.tiers[ELEVATE_TIER_SYSTEM].tried, L"fallback ran despite fallback off");
+    CHECK(!g_elevate.tiers[ELEVATE_TIER_ADMIN].tried, L"admin tier ran despite fallback off");
     isAdmin = LimiterIsRunAsAdmin();
     if (!isAdmin) {
         CHECK(!g_elevate.tiers[ELEVATE_TIER_TI].ok, L"TI tier succeeded without administrator");
@@ -344,7 +282,7 @@ static void TestResultState(void) {
     CHECK(SummaryExitCode(1, 1, 0) == 0, L"exit code 0 mismatch");
     CHECK(SummaryExitCode(2, 1, 1) == 2, L"exit code 2 mismatch");
     CHECK(SummaryExitCode(1, 0, 0) == 3, L"exit code 3 mismatch");
-    LimiterApplyBatch(NULL, 0, 0, 0, FALSE, NULL);
+    LimiterApplyBatch(NULL, 0, 0, 0, NULL);
 }
 
 /* 受限令牌环境（AppContainer / 沙箱）里连自身进程都拿不到
@@ -419,7 +357,6 @@ static void TestChildBatch(void) {
         1,
         LimiterGetLastCpuAffinityMask(LimiterGetCpuCount(0)),
         3,
-        TRUE,
         &first);
     CHECK(first.opened, L"child process was not opened");
     CHECK(!first.stale, L"child process was marked stale");
@@ -430,14 +367,13 @@ static void TestChildBatch(void) {
         1,
         LimiterGetLastCpuAffinityMask(LimiterGetCpuCount(0)),
         3,
-        TRUE,
         &second);
     CHECK(RESULT_OK(&second, STEP_CAP), L"child CPU cap was not reapplied");
     ResumeThread(process.hThread);
     CloseProcess(&process);
 }
 
-static void TestExternalJob(BOOL allowNest) {
+static void TestExternalJob(void) {
     wchar_t path[1024];
     wchar_t *base;
     PROCESS_INFORMATION process;
@@ -475,21 +411,12 @@ static void TestExternalJob(BOOL allowNest) {
         1,
         LimiterGetLastCpuAffinityMask(LimiterGetCpuCount(0)),
         3,
-        allowNest,
         &result);
     CHECK(result.opened && !result.stale, L"external-job child open mismatch");
-    if (allowNest) {
-        CHECK(!result.capSkipped, L"nesting was requested but the cap was skipped");
-        CHECK(RESULT_OK(&result, STEP_CAP), L"nested cap was not applied");
-    } else {
-        CHECK(result.capSkipped, L"external job without nesting was not skipped");
-        CHECK(result.capSkipErr == ERROR_JOB_CONFLICT, L"external job skip error mismatch");
-    }
+    CHECK(!result.capSkipped, L"external job cap was skipped");
+    CHECK(RESULT_OK(&result, STEP_CAP), L"nested cap was not applied");
     for (step = 0; step < STEP_COUNT; step++) {
-        if (step == STEP_CAP && !allowNest) {
-            continue;
-        }
-        CHECK(result.attempted[step], L"external job blocked another step");
+        CHECK(result.attempted[step], L"external job blocked a step");
     }
     CHECK(IsProcessInJob(process.hProcess, job, &inExternal) && inExternal, L"process left the external job");
     CloseProcess(&process);
@@ -508,12 +435,12 @@ static void TestFailures(void) {
     memset(&target, 0, sizeof(target));
     target.pid = 0xFFFFFFF0u;
     wcscpy(target.name, L"missing.exe");
-    LimiterApplyBatch(&target, 1, 1, 3, FALSE, &result);
+    LimiterApplyBatch(&target, 1, 1, 3, &result);
     CHECK(!result.opened, L"missing process opened");
     CHECK(!result.stale, L"missing process marked stale");
     target.pid = GetCurrentProcessId();
     wcscpy(target.name, L"not-this-process.exe");
-    LimiterApplyBatch(&target, 1, 1, 0, FALSE, &result);
+    LimiterApplyBatch(&target, 1, 1, 0, &result);
     CHECK(result.stale, L"identity mismatch was not marked stale");
     LimiterEnableDebugPrivilege(&ignored);
 }
@@ -535,8 +462,7 @@ int wmain(int argc, wchar_t **argv) {
     TestResultState();
     TestFailures();
     TestChildBatch();
-    TestExternalJob(FALSE);
-    TestExternalJob(TRUE);
+    TestExternalJob();
     if (g_failures) {
         fwprintf(stderr, L"%d test(s) failed\n", g_failures);
         return 1;

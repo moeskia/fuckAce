@@ -74,11 +74,7 @@ int EngineRunOnce(BOOL isFirst) {
         UISegSet(&status[count++], COLOR_HEAD, " → CPU ");
         UISegSet(&status[count++], COLOR_WHITE, "%lu", (unsigned long)(groupCpus - 1));
         UISegSet(&status[count++], COLOR_HEAD, " · cap ");
-        if (g_config.cpuCapPercent > 0) {
-            UISegSet(&status[count++], COLOR_WARN, "%lu%%/CPU", (unsigned long)g_config.cpuCapPercent);
-        } else {
-            UISegSet(&status[count++], COLOR_FRAME, "off");
-        }
+        UISegSet(&status[count++], COLOR_WARN, "%d%%/CPU", DEFAULT_CPU_CAP);
         UIBoxRow(count, status);
     }
     {
@@ -144,7 +140,7 @@ int EngineRunOnce(BOOL isFirst) {
         UIBoxRow(count, header);
     }
 
-    LimiterApplyBatch(targets, targetCount, affinity, g_config.cpuCapPercent, g_config.cpuCapNest, results);
+    LimiterApplyBatch(targets, targetCount, affinity, DEFAULT_CPU_CAP, results);
     {
         int foundCount = 0;
         int skippedCount = 0;
@@ -157,8 +153,6 @@ int EngineRunOnce(BOOL isFirst) {
         int unsupportedCount = 0;
         int otherErrorCount = 0;
         int capRightsSkipped = 0;
-        int capJobSkipped = 0;
-        int capOtherSkipped = 0;
         int exitCode;
 
         memset(applied, 0, sizeof(applied));
@@ -187,13 +181,7 @@ int EngineRunOnce(BOOL isFirst) {
                 }
             }
             if (result->capSkipped) {
-                if (result->capSkipReason == CAP_SKIP_RIGHTS) {
-                    capRightsSkipped++;
-                } else if (result->capSkipReason == CAP_SKIP_JOB) {
-                    capJobSkipped++;
-                } else {
-                    capOtherSkipped++;
-                }
+                capRightsSkipped++;
             }
             state = ResultState(result);
             if (state == RESULT_FULL) {
@@ -245,12 +233,6 @@ int EngineRunOnce(BOOL isFirst) {
                 applied[STEP_CAP]);
             if (capRightsSkipped > 0) {
                 UIBoxLine(COLOR_WARN, "          %d CPU cap skipped — insufficient quota rights", capRightsSkipped);
-            }
-            if (capJobSkipped > 0) {
-                UIBoxLine(COLOR_WARN, "          %d CPU cap skipped — process already in another job", capJobSkipped);
-            }
-            if (capOtherSkipped > 0) {
-                UIBoxLine(COLOR_WARN, "          %d CPU cap skipped — job membership not verified", capOtherSkipped);
             }
             if (skippedCount > 0) {
                 UIBoxLine(COLOR_WARN, "          %d pid(s) recycled before they could be configured — skipped", skippedCount);

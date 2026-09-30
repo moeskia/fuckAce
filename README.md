@@ -24,7 +24,7 @@ ACE 的 `SGuardSvc64.exe` 跑在 SYSTEM 下，某些操作管理员权限也够�
 
 | 档位 | 令牌来源 | 拿到令牌的方式 |
 | --- | --- | --- |
-| TrustedInstaller | `NT SERVICE\TrustedInstaller`（`S-1-5-80-956008885-…`） | ① 复制现成 `TrustedInstaller.exe` 的令牌；② 在借来的 SYSTEM 底座上 `NtCreateToken` **造一张**；③ 临时换 TI 服务的 `ImagePath`（默认开，**Windows 11 客户端上只有这条能用**，见下文） |
+| TrustedInstaller | `NT SERVICE\TrustedInstaller`（`S-1-5-80-956008885-…`） | ① 复制现成 `TrustedInstaller.exe` 的令牌；② 在借来的 SYSTEM 底座上 `NtCreateToken` **造一张**；③ 临时换 TI 服务的 `ImagePath`（默认强制开，**Windows 11 客户端上只有这条能用**，见下文） |
 | SYSTEM | `NT AUTHORITY\SYSTEM`（`S-1-5-18`） | **首选自建临时 LocalSystem 服务做令牌供体**；失败才去别的进程里找 |
 | admin | 当前登录管理员（`S-1-5-32-544`） | 进程已经提升就直接用；否则用 `runas` 走一次 UAC 自提权并等待子进程 |
 
@@ -38,7 +38,7 @@ ACE 的 `SGuardSvc64.exe` 跑在 SYSTEM 下，某些操作管理员权限也够�
 
 现在的做法分两层：
 
-1. **自建供体（主路径，`--no-service` 可关）**：`CreateServiceW` 注册一个临时服务，`binPath` 指向**本程序自己**并带 `--syndonor`，以 `LocalSystem` 启动。供体进程调用 `StartServiceCtrlDispatcherW` 干净地报 `SERVICE_RUNNING`，父进程从 SCM 查到 pid，复制它的令牌；用完 `SERVICE_CONTROL_STOP` + `DeleteService`。令牌来源是我们自己的二进制，不受目标机器上"跑了哪些进程"、也不受 PPL 影响。
+1. **自建供体（主路径）**：`CreateServiceW` 注册一个临时服务，`binPath` 指向**本程序自己**并带 `--syndonor`，以 `LocalSystem` 启动。供体进程调用 `StartServiceCtrlDispatcherW` 干净地报 `SERVICE_RUNNING`，父进程从 SCM 查到 pid，复制它的令牌；用完 `SERVICE_CONTROL_STOP` + `DeleteService`。令牌来源是我们自己的二进制，不受目标机器上"跑了哪些进程"、也不受 PPL 影响。
    - 打开令牌只要 `TOKEN_QUERY | TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY | TOKEN_IMPERSONATE`，`TOKEN_ADJUST_*` 留到**复制出来的**句柄上再要（那个句柄是我们自己创建的）。
    - 供体带 60 秒兜底寿命，父进程中途没了也不会把它永远留在系统里。
    - 每次创建前先清掉同名残留服务：`HKLM\SYSTEM\CurrentControlSet\Services\fuckAceSystemDonor` 指向用户可写路径本身就是本地提权隐患，不能留。
@@ -48,7 +48,7 @@ ACE 的 `SGuardSvc64.exe` 跑在 SYSTEM 下，某些操作管理员权限也够�
 
 ### TrustedInstaller 这一档：先"造"，造不出来就换身份
 
-默认档位就是 TrustedInstaller：`--as=auto` 从 TI 开始，TI 拿不到才往 SYSTEM 回退，SYSTEM 也不行才到 admin（`--no-fallback` 可只试一档）。
+提权链固定从 TrustedInstaller 开始，TI 拿不到才往 SYSTEM 回退，SYSTEM 也不行才到 admin。命令行不再提供改起始档或只试一档的入口。
 
 实测（Windows 11，管理员完全提升）：`TrustedInstaller.exe` 的令牌，`Administrators` 连 `TOKEN_DUPLICATE` 都拿不到 —— **"去偷它的令牌"这条路对管理员来说在现代 Windows 上注定失败**，界面会写 `PPL token not granted to Administrators`。
 
@@ -58,7 +58,7 @@ ACE 的 `SGuardSvc64.exe` 跑在 SYSTEM 下，某些操作管理员权限也够�
 | --- | --- | --- | --- | --- |
 | 1 | 复制现成 `TrustedInstaller.exe` 的令牌 | 非 PPL 的旧系统，或**已经在 SYSTEM 上**且真有 TI 进程 | 无 | 管理员下失败（PPL）；SYSTEM 下成功 |
 | 2 | 在 SYSTEM 底座上 `NtCreateToken` 造一张 | LocalSystem **且它的令牌里有 `SeCreateTokenPrivilege`** | 无 | **Windows 11 客户端不可用**，见下 |
-| 3 | 临时改写 TI 服务的 `ImagePath`（默认开，见下文） | SYSTEM 或已提升的管理员 | 有，但立即还原 | **验证通过** |
+| 3 | 临时改写 TI 服务的 `ImagePath`（默认强制开，见下文） | SYSTEM 或已提升的管理员 | 有，但立即还原 | **验证通过** |
 
 #### 实测：Windows 11 客户端的 LocalSystem 里没有 `SeCreateTokenPrivilege`
 
@@ -78,13 +78,13 @@ ACE 的 `SGuardSvc64.exe` 跑在 SYSTEM 下，某些操作管理员权限也够�
    - `TokenUser = NT SERVICE\TrustedInstaller`；
    - 组里补上 `SYSTEM`、`Administrators`、`SERVICE`、`Users`、`Everyone`、`Authenticated Users`，全部 enabled —— 造出来的是**真 TI 的超集**，不会因为少一条组 SID 在别处被拦；
    - 常见特权全部置 `SE_PRIVILEGE_ENABLED`；
-   - 完整性级别单独设成 `System`（`NtCreateToken` 不认组里的 `S-1-16-*`，不设会被内核按 Medium 处理，写 High IL 对象会被拦）；会话号设成当前会话（不设的话 `--spawn` 出来的子进程会掉进 session 0，没有桌面）；
+   - 完整性级别单独设成 `System`（`NtCreateToken` 不认组里的 `S-1-16-*`，不设会被内核按 Medium 处理，写 High IL 对象会被拦）；会话号设成当前会话（不设的话重拉出来的子进程会掉进 session 0，没有桌面）；
    - 默认 DACL 显式给 SYSTEM / Administrators / TI 完全控制（留 NULL 等于给大家完全控制）。
 4. 造出来立刻核对：**组里没有 enabled 的 TI SID 就按失败处理**，绝不拿"看起来像"的东西当成功。`NtCreateToken` 返回的 `STATUS_*` 会翻成等价 Win32 码显示。
 
-`--no-ti-forge` 关掉这条路；`--no-service` 下 SYSTEM 底座退回"从现有进程里找"，伪造照常可用。这条路人称"令牌锻造"，部分 EDR 会盯 `NtCreateToken`，被拦时会以真实错误码显示并继续往下走。
+这条路人称"令牌锻造"，部分 EDR 会盯 `NtCreateToken`，被拦时会以真实错误码显示并继续往下走。
 
-#### `--ti-hijack`：拿真正的 TI 服务身份，代价是动一次注册表
+#### 镜像劫持：拿真正的 TI 服务身份，代价是动一次注册表
 
 把 `TrustedInstaller` 服务的 `ImagePath` 临时换成自己，让 SCM 用真实的 TI 服务身份把本程序拉起来。该服务的 `ServiceSidType = 1`（`SERVICE_SID_TYPE_UNRESTRICTED`），SCM 会往令牌里补上 `NT SERVICE\TrustedInstaller` —— 这个 SID 由服务名派生，伪造不来。
 
@@ -115,25 +115,24 @@ ACE 的 `SGuardSvc64.exe` 跑在 SYSTEM 下，某些操作管理员权限也够�
 >
 > `--diagnose` 的 `effective token` 一栏把两者分开写：`identity` 是真正的访问身份（`TrustedInstaller` / `SYSTEM` / `admin`），`logon` 是令牌的 `TokenUser`。引擎头部那个徽章也改成打 `NT SERVICE\TrustedInstaller` 而不是 `TokenUser`，免得看起来像提权没生效。
 
-默认**开**（`TI_HIJACK_SAFE`）：TI 是这套工具的默认档位，而 Windows 11 客户端上只有劫持能拿到 TI，所以它不能是可选件。但它默认**不去打断一个正在跑的 `TrustedInstaller`** —— 它跑起来基本就是在装更新，硬停会把维护打断；那种情况下直接往 SYSTEM 回退。三种强度：
+默认**开且强制**（`TI_HIJACK_FORCE`）：TI 是这套工具的默认档位，而 Windows 11 客户端上只有劫持能拿到 TI，所以它不能是可选件，命令行也不再提供关闭入口。为了拿到 TI 身份，连正在跑的 `TrustedInstaller` 也会先被停掉再劫持（停不掉就放弃并回退 SYSTEM）；代价是撞上正在装更新时会把那次维护打断。
 
-| 取值 | 参数 | 行为 |
-| --- | --- | --- |
-| `TI_HIJACK_SAFE` | 默认 | 只在 TI **本来就没在跑**时才劫持；已经在跑就跳过并回退 |
-| `TI_HIJACK_FORCE` | `--ti-hijack` | 连正在跑的也停掉再劫持（停不掉就放弃并回退）。用完**不会**替你把它重新拉起来 —— 它是按需启动的，Windows 需要时会自己起来 |
-| `TI_HIJACK_OFF` | `--no-ti-hijack` | 完全不动 TI 服务，`--as=auto` 就落在 SYSTEM |
+| 取值 | 行为 |
+| --- | --- |
+| `TI_HIJACK_FORCE`（固定） | 连正在跑的也停掉再劫持（停不掉就放弃并回退）。用完**不会**替你把它重新拉起来 —— 它是按需启动的，Windows 需要时会自己起来 |
+| `TI_HIJACK_SAFE` / `TI_HIJACK_OFF` | 保留的状态常量，命令行不可达 |
 
-判据取的是**我们动手之前**的服务状态：方法一为了拿令牌会自己把 TI 拉起来，若拿"当前状态"当判据，默认配置会把自己刚启动的服务误判成"系统正在维护"，于是永远跳过劫持、永远落不到 TI。
+判据取的是**我们动手之前**的服务状态：方法一为了拿令牌会自己把 TI 拉起来，若拿"当前状态"当判据，会把刚启动的服务误判成"系统正在维护"。
 
-`--keep-ti` 与劫持语义冲突（前者要"别停我拉起来的 TI 服务"，后者必须先停服务，而且劫持完绝不能把供体留在系统里——那就是一个 TI 身份的后门），所以 `--keep-ti` 会让劫持**跳过**并往 SYSTEM 回退，而不是直接报错。
+劫持必须先把服务停掉，而且劫持完绝不能把供体留在系统里——那就是一个 TI 身份的后门。所以"保留自己拉起的 TI 服务"这种诉求在本工具里不存在。
 
 拿到令牌后默认**就地把当前线程切到那个身份**（`DuplicateTokenEx` → `SetThreadToken`），全程一个进程，界面、退出码、重试循环都不受影响：
 
 - 落地前先把令牌里**已经存在的**特权逐个打开，否则拿到的令牌往往连 `SeDebugPrivilege` 都是关闭的。
   > 这里修了一个一直在骗人的写法：老代码给 `AdjustTokenPrivileges` 传一个 `Luid = 0` 的单项，注释说"这是'全部特权'的约定"。**那个约定并不存在** —— 实际效果是什么都没打开，实测拿到的 SYSTEM 令牌里 `SeAssignPrimaryTokenPrivilege` 一直是 off，于是 `CreateProcessAsUser` 必然 `ERROR_PRIVILEGE_NOT_HELD`，TI 劫持的"守护进程"兜底其实从来没起来过（它现在起来了，上面第 2 层的 134 ms 就是证据）。现在改成老老实实枚举 `TokenPrivileges` 逐个开。
 - 切换后立刻回读线程令牌，SID 对不上就 `RevertToSelf()` 并继续向下回退——**只有真正到位才算这一档成功**。
-- 如果这一档是我们自己启动的 `TrustedInstaller` 服务，用完即 `SERVICE_CONTROL_STOP` 停掉，不把系统留在被改过的状态（`--keep-ti` 可关掉这个行为）。
-- `--spawn` 则改用 `CreateProcessWithTokenW`（失败再退到 `CreateProcessAsUserW`）以该令牌**重新拉起自身**：子进程先以 `CREATE_SUSPENDED` 创建，父进程核验它的令牌身份无误、画完提权链再 `ResumeThread`，子进程跑完把退出码传回父进程。
+- 如果这一档是我们自己启动的 `TrustedInstaller` 服务，用完即 `SERVICE_CONTROL_STOP` 停掉，不把系统留在被改过的状态。
+- 线程模拟失败时自动改用 `CreateProcessWithTokenW`（失败再退到 `CreateProcessAsUserW`）以该令牌**重新拉起自身**：子进程先以 `CREATE_SUSPENDED` 创建，父进程核验它的令牌身份无误、画完提权链再 `ResumeThread`，子进程跑完把退出码传回父进程。
 
 ### admin 档为什么要单独说
 
@@ -147,7 +146,7 @@ ACE 的 `SGuardSvc64.exe` 跑在 SYSTEM 下，某些操作管理员权限也够�
 
 SSDT 之外的影响：`SeImpersonatePrivilege`、`SeAssignPrimaryTokenPrivilege`、`SeIncreaseQuotaPrivilege`、`SeDebugPrivilege` 等特权会在提权前逐个启用，失败不致命，只记录首个错误码并在界面上提示。
 
-`--no-elevate` 可以整条链关掉，退回原来的“直接以当前权限跑”。链上每一档的成功/失败、来源进程 PID 和错误码都会画在界面上；全部失败时不会静默降级——引擎头部会打出 `token none` 并附 `! escalation chain exhausted`。
+提权是必开的，没有关掉整条链的入口。链上每一档的成功/失败、来源进程 PID 和错误码都会画在界面上；全部失败时不会静默降级——引擎头部会打出 `token none` 并附 `! escalation chain exhausted`，随后以退出码 `1` 结束。
 
 ## 源码结构
 
@@ -181,29 +180,17 @@ tests/          集成测试入口
 ## 使用
 
 ```
-fuckAce.exe [--rate=PERCENT] [--no-cap] [--nest] [--as=TIER] [--no-elevate] [--no-fallback] [--impersonate|--spawn] [--keep-ti] [--no-ti-forge] [--no-ti-hijack] [process.exe ...]
+fuckAce.exe [--diagnose] [process.exe ...]
 ```
+
+命令行只剩两个入口：只读诊断，以及追加目标进程名。CPU 上限固定为 `3%/CPU`，提权链固定 TrustedInstaller → SYSTEM → admin 且必须成功，TI 镜像劫持固定强制开启——这些都没有开关。
 
 | 参数 | 说明 |
 | --- | --- |
-| `--rate=N` | CPU 硬上限，单位是**单个逻辑 CPU 的百分比**，默认 `3` |
-| `--no-cap` | 关闭 CPU 硬上限（`--rate=0` 等价） |
-| `--nest` | 目标已在其它 Job 中时，尝试把自己的 Job 嵌套进去以继续施加 `CAP`；默认跳过。详见下方说明 |
-| `--as=TIER` | 指定提权链从哪一档开始：`ti` / `system` / `admin`（也接受 `trustedinstaller`、`administrator`）；`auto`（默认）从 TrustedInstaller 开始，`off` 等价于 `--no-elevate` |
-| `--no-elevate` | 完全不提权，直接用当前令牌运行（旧行为） |
-| `--no-fallback` | 只试 `--as=` 指定的那一档，失败就带着当前权限继续，不向下回退 |
-| `--impersonate` | 只用线程模拟（默认行为之一） |
-| `--spawn` | 只用令牌重新拉起自身，不做线程模拟 |
-| `--keep-ti` | 用完不停止自己启动的 TrustedInstaller 服务 |
-| `--no-service` | 不用临时 LocalSystem 服务做 SYSTEM 供体，只从现有进程里找 SYSTEM 令牌（不建议） |
-| `--no-ti-forge` | 关掉"在 SYSTEM 底座上 `NtCreateToken` 造 TI 令牌"这条路（默认开） |
-| `--ti-hijack` | **强制**：连正在跑的 `TrustedInstaller` 也停掉再换 `ImagePath`（默认只在它本来就没在跑时才动它） |
-| `--no-ti-hijack` | 关掉镜像劫持；`--as=auto` 就退回 SYSTEM 保底。详见上文 |
 | `--diagnose` | 只读打印当前进程/有效身份与 TI 残留备份，不尝试提权档、不启动服务、不修改注册表或进程；当前身份没有可用档位时退出码 `1` |
-| `--escalated=N` | 内部参数，父进程用它告知子进程“你已经处在第 N 档”，防止无限递归 |
-| `process.exe` | 追加目标进程名（最长 31 个字符），默认已包含 `SGuard64.exe` 与 `SGuardSvc64.exe` |
+| `process.exe` | 追加目标进程名（最长 31 个字符，最多 32 个），默认已包含 `SGuard64.exe` 与 `SGuardSvc64.exe` |
 
-`--rate=` 只接受 `0`–`100` 的纯十进制整数；空值、正负号、空白、十六进制或混合文本都会报错退出；大于 `100`（含超长整数）会提示并钳位到 `100`，`--rate=0` 等价于 `--no-cap`。`--as=` 与 `--escalated=` 同样只接受合法取值，非法值直接报错退出。
+`--escalated=N` 连同 `--syndonor`、`--tirepair=` 是程序自己拉起子进程时用的内部参数，不属于用户界面。任何其它以 `-` 开头的参数都会以 `unknown option` 报错退出。
 
 直接运行 `fuckAce.exe` 即可。启动会检查权限、扫描进程、逐项设置并以表格输出结果：
 
@@ -222,14 +209,14 @@ fuckAce.exe [--rate=PERCENT] [--no-cap] [--nest] [--as=TIER] [--no-elevate] [--n
 
 ## 说明
 
-- 必须在管理员权限下运行，并启用 `SeDebugPrivilege`。默认还会先沿 TrustedInstaller → SYSTEM → admin 依次回退拿到最高可用令牌，见上文；`--no-elevate` 可关掉。
+- 必须在管理员权限下运行，并启用 `SeDebugPrivilege`。程序会先沿 TrustedInstaller → SYSTEM → admin 依次回退拿到最高可用令牌，且必须成功，没有关闭入口，见上文。
 - **CPU 硬上限用 Job Object 实现，程序退出后依然生效**（只要目标进程还活着）。进程无法离开一个不是自己创建的 Job，所以这一项无法被 ACE 自行解除；这也是唯一"解不掉"的限流手段。
-- Job 的 `CpuRate` 是**整机**比例，不是单核比例。程序按 `--rate / 逻辑 CPU 数` 换算：在 16 核机器上 `--rate=3` 约为 0.03 个核心。若游戏出现卡顿或 ACE 异常，调大 `--rate` 或使用 `--no-cap`。
+- Job 的 `CpuRate` 是**整机**比例，不是单核比例。程序按 `DEFAULT_CPU_CAP(=3) / 逻辑 CPU 数` 换算：在 16 核机器上约为 0.03 个核心。若游戏出现卡顿或 ACE 异常，改 `src/core/common.h` 里的 `DEFAULT_CPU_CAP` 后重新构建——命令行已不提供调大或关闭的入口。
 - `PRIO` / `AFF` / `ECO` / `MEM` 是进程级设置；`IO` 同时设置进程级与每个已存在线程的 I/O 优先级（线程级设置需要 `SeIncreaseBasePriorityPrivilege`，程序会尽力启用，失败时按真实错误码标出）；`THR` 只作用于执行瞬间已存在的线程（并逐个回读校验），之后新建的线程由进程优先级兜底。
-- 拿不到 `PROCESS_SET_QUOTA` + `PROCESS_TERMINATE` 权限时跳过 `CAP`（该列显示 `-`）并在汇总处提示。目标若已在其它 Job 中（ACE 常见情形），默认跳过 `CAP` 并在汇总处提示；加 `--nest` 后，程序会在 Windows 8+ 上尝试把自己的 Job 嵌套进那个 Job 下方（`AssignProcessToJobObject`），成功则 `CAP` 照常生效，失败则跳过并在该行注明真实错误码，其余六项照常执行。
-- 提权链只影响**本进程的有效身份**，不装服务、不留后门：SYSTEM 那一档的临时供体服务用完即 `DeleteService`；`TrustedInstaller` 服务是 Windows 自带的组件，只有在我们把它拉起来时才会去停；`--spawn` 模式下父进程会等子进程跑完并把退出码原样传回。唯一的例外是 TI 档的镜像劫持（**默认开**）：它会把 TI 服务的 `ImagePath` 临时改成自己并在几百毫秒内还原，配套 HKLM 备份、SYSTEM 守护进程、启动自检三层兜底（见上文）。不想让它碰注册表就加 `--no-ti-hijack`，代价是 TI 拿不到、落回 SYSTEM。
+- 拿不到 `PROCESS_SET_QUOTA` + `PROCESS_TERMINATE` 权限时跳过 `CAP`（该列显示 `-`）并在汇总处提示。目标若已在其它 Job 中（ACE 常见情形），程序会在 Windows 8+ 上把自己的 Job 嵌套进那个 Job 下方（`AssignProcessToJobObject`），成功则 `CAP` 照常生效；失败不再跳过，而是把该调用的真实错误码记到 `CAP` 列按失败处理，其余六项照常执行。
+- 提权链只影响**本进程的有效身份**，不装服务、不留后门：SYSTEM 那一档的临时供体服务用完即 `DeleteService`；`TrustedInstaller` 服务是 Windows 自带的组件，只有在我们把它拉起来时才会去停；线程模拟失败改用令牌重拉时，父进程会等子进程跑完并把退出码原样传回。唯一的例外是 TI 档的镜像劫持（**固定强制**）：它会把 TI 服务的 `ImagePath` 临时改成自己并在几百毫秒内还原，配套 HKLM 备份、SYSTEM 守护进程、启动自检三层兜底（见上文）。
 - 引擎对“够权限”的判定看的是**实际身份**（admin / SYSTEM / TrustedInstaller 任一档）而不是单纯的管理员组：TrustedInstaller 令牌里的 `Administrators` 是 deny-only，只用 `CheckTokenMembership` 判定会把已提权的进程误判成无权限。
-- 新建的 Job 使用 `本地会话名称 + PID + 进程创建时间` 标识。目标原本不在任何 Job 中时，自动重试或再次运行会复用并更新同一个 Job，不会重复限流；关闭本程序句柄后上限仍保留。但目标已在其它 Job 中（即 `--nest` 生效）时，嵌套出来的 Job 在句柄关闭后**名称不再可查**，再次运行/重试会再嵌套一层；嵌套的 `CpuRate` 是相对父 Job 的比例，会**逐层叠加**（两层 3% 实际约为 0.09%）。因此 `--nest` 建议每次会话只运行一次，确认 ACE 已被压住后不必重复运行。`--no-cap` 只跳过本次设置，不撤销已有上限。
+- 新建的 Job 使用 `本地会话名称 + PID + 进程创建时间` 标识。目标原本不在任何 Job 中时，自动重试或再次运行会复用并更新同一个 Job，不会重复限流；关闭本程序句柄后上限仍保留。但目标已在其它 Job 中时，嵌套出来的 Job 在句柄关闭后**名称不再可查**，再次运行/重试会再嵌套一层；嵌套的 `CpuRate` 是相对父 Job 的比例，会**逐层叠加**（两层 3% 实际约为 0.09%）。所以确认 ACE 已被压住后不必反复重跑。
 - ACE 会自我防护，若进程以保护模式运行，部分或全部操作可能返回 `access denied`，此时程序按退出码 `2` / `3` 提示。
 - 扫描与设置之间若 PID 被回收，程序会在打开后比对进程名并跳过该条目（汇总处显示 skipped 数）。
 - 仅在本地运行，不联网、不修改任何文件。

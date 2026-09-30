@@ -13,9 +13,9 @@ enum {
 
 #define ELEVATE_TIER_NONE (-1)
 
-/* --as= 未指定时从最高档位开始依次回退 */
+/* 固定值：从最高档位开始依次回退 */
 #define ELEVATE_MODE_AUTO (-1)
-/* --no-elevate：不做任何提权，用当前令牌运行 */
+/* 保留状态常量：命令行已不提供“不提权”入口 */
 #define ELEVATE_MODE_OFF ELEVATE_TIER_COUNT
 
 /* 拿到令牌之后的落地方式 */
@@ -80,7 +80,7 @@ typedef struct _ELEVATE_TIER_RESULT {
 } ELEVATE_TIER_RESULT;
 
 typedef struct _ELEVATE_STATUS {
-    int mode;        /* --as= 的取值，ELEVATE_MODE_AUTO / 档位 / ELEVATE_MODE_OFF */
+    int mode;        /* 固定 ELEVATE_MODE_AUTO，命令行已移除 --as= */
     int use;         /* ELEVATE_USE_* */
     BOOL fallback;   /* 是否允许向更低档位回退 */
     int requested;   /* 父进程通过 --escalated=N 声明的档位，-1 表示本进程自己提权 */

@@ -398,7 +398,7 @@ static BOOL ElevateAcquireTrustedInstallerTokenForged(ELEVATE_TIER_RESULT *resul
 
     if (!g_config.tiForge) {
         result->error = ERROR_NOT_SUPPORTED;
-        wcscpy(result->note, L"forge disabled (--no-ti-forge)");
+        wcscpy(result->note, L"forge disabled");
         return FALSE;
     }
     /* Windows 11 客户端的 LocalSystem 令牌里根本没有 SeCreateTokenPrivilege
@@ -429,7 +429,7 @@ static BOOL ElevateAcquireTrustedInstallerTokenForged(ELEVATE_TIER_RESULT *resul
     return TRUE;
 }
 
-/* 办法三（--ti-hijack，默认开启）：临时把 TrustedInstaller 服务的 ImagePath 换成自己。
+/* 办法三（默认开启，强制劫持）：临时把 TrustedInstaller 服务的 ImagePath 换成自己。
    SCM 会用真实的 TI 服务身份（ServiceSidType=1 会补上 NT SERVICE\TrustedInstaller）
    把本程序拉起来，复制完令牌立刻把键还原。
 
@@ -460,15 +460,15 @@ static BOOL ElevateAcquireTrustedInstallerTokenViaHijack(
 
     if (g_config.tiHijack == TI_HIJACK_OFF) {
         result->error = ERROR_NOT_SUPPORTED;
-        wcscpy(result->note, L"hijack off (--no-ti-hijack)");
+        wcscpy(result->note, L"hijack off");
         return FALSE;
     }
     if (g_config.elevateKeepService) {
-        /* --keep-ti 要的是"别停我拉起来的 TI 服务"，而劫持必须先把服务停掉；
-           更关键的是劫持完绝不能把供体留在系统里（那就是一个 TI 身份的后门）。
-           两者语义冲突，这里直接跳过劫持，让链条往 SYSTEM 回退。 */
+        /* 保留服务与劫持语义冲突：劫持必须先把服务停掉，而且劫持完绝不能把
+           供体留在系统里（那就是一个 TI 身份的后门）。这里直接跳过劫持，
+           让链条往 SYSTEM 回退。 */
         result->error = ERROR_INVALID_FLAGS;
-        wcscpy(result->note, L"hijack skipped (--keep-ti)");
+        wcscpy(result->note, L"hijack skipped (service kept)");
         return FALSE;
     }
     if (!ElevateSelfExecutablePath(executable, sizeof(executable) / sizeof(executable[0]))) {
@@ -510,11 +510,10 @@ static BOOL ElevateAcquireTrustedInstallerTokenViaHijack(
         BOOL stopped = FALSE;
 
         /* 这里看的必须是**我们动手之前**的状态。方法一为了拿令牌会自己把 TI 拉起来，
-           如果拿"现在的状态"当判据，默认配置就会把自己刚启动的服务误判成
-           "系统正在维护"，于是永远跳过劫持、永远落不到 TI。 */
+           如果拿"现在的状态"当判据，会把刚启动的服务误判成"系统正在维护"。 */
         if (g_config.tiHijack != TI_HIJACK_FORCE && serviceWasRunning != 0) {
             result->error = ERROR_SERVICE_ALREADY_RUNNING;
-            wcscpy(result->note, L"TI was already running; hijack skipped (--ti-hijack forces it)");
+            wcscpy(result->note, L"TI was already running; hijack skipped");
             goto done;
         }
         stopper = OpenServiceW(
@@ -702,7 +701,7 @@ static BOOL ElevateAcquireTrustedInstallerTokenElevated(
 /* 三种办法按“副作用从小到大”排：
    1) 直接复制现成 TI 进程的令牌（零副作用，PPL 机器上必失败）
    2) SYSTEM 上 NtCreateToken 造一个（零持久状态）
-   3) 换 TI 服务的 ImagePath（默认允许，--no-ti-hijack 关闭）
+   3) 换 TI 服务的 ImagePath（默认强制开启）
    借 SYSTEM 这件事只在这里发生一次，两条需要 SYSTEM 的办法共用同一个底座。 */
 BOOL ElevateAcquireTrustedInstallerToken(ELEVATE_TIER_RESULT *result, HANDLE *outToken) {
     ELEVATE_TIER_RESULT direct;

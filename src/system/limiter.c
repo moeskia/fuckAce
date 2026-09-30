@@ -214,23 +214,17 @@ static void BuildJobName(DWORD pid, const FILETIME *created, wchar_t *name, size
 static BOOL ApplyCpuCap(
     HANDLE process,
     DWORD percent,
-    BOOL allowNest,
-    DWORD *outError,
-    BOOL *skipped,
-    int *outSkipReason
+    DWORD *outError
 ) {
     FILETIME created, exited, kernel, user;
     JOBOBJECT_CPU_RATE_CONTROL_INFORMATION info;
     JOBOBJECT_CPU_RATE_CONTROL_INFORMATION check;
     HANDLE job;
-    BOOL inAnyJob = FALSE;
     BOOL inOurJob = FALSE;
     DWORD returned = 0;
     wchar_t name[96];
 
     *outError = ERROR_SUCCESS;
-    *skipped = FALSE;
-    *outSkipReason = CAP_SKIP_NONE;
     if (!GetProcessTimes(process, &created, &exited, &kernel, &user)) {
         *outError = GetLastError();
         return FALSE;
@@ -241,25 +235,8 @@ static BOOL ApplyCpuCap(
         *outError = GetLastError();
         return FALSE;
     }
-    if (!IsProcessInJob(process, NULL, &inAnyJob)) {
-        *outError = ERROR_NOT_VERIFIED;
-        *skipped = TRUE;
-        *outSkipReason = CAP_SKIP_UNVERIFIED;
-        CloseHandle(job);
-        return FALSE;
-    }
     if (!IsProcessInJob(process, job, &inOurJob)) {
         *outError = ERROR_NOT_VERIFIED;
-        *skipped = TRUE;
-        *outSkipReason = CAP_SKIP_UNVERIFIED;
-        CloseHandle(job);
-        return FALSE;
-    }
-    if (inAnyJob && !inOurJob && !allowNest) {
-        /* Nested rate control compounds across runs, so nesting is opt-in. */
-        *outError = ERROR_JOB_CONFLICT;
-        *skipped = TRUE;
-        *outSkipReason = CAP_SKIP_JOB;
         CloseHandle(job);
         return FALSE;
     }
@@ -279,15 +256,11 @@ static BOOL ApplyCpuCap(
             if (*outError == ERROR_SUCCESS) {
                 *outError = ERROR_NOT_VERIFIED;
             }
-            *skipped = TRUE;
-            *outSkipReason = CAP_SKIP_JOB;
             CloseHandle(job);
             return FALSE;
         }
         if (!IsProcessInJob(process, job, &inOurJob) || !inOurJob) {
             *outError = ERROR_NOT_VERIFIED;
-            *skipped = TRUE;
-            *outSkipReason = CAP_SKIP_UNVERIFIED;
             CloseHandle(job);
             return FALSE;
         }
@@ -502,7 +475,6 @@ void LimiterApplyBatch(
     int count,
     DWORD_PTR affinityMask,
     DWORD cpuCapPercent,
-    BOOL allowNest,
     PROCESS_RESULT *results
 ) {
     HANDLE processes[MAX_TARGETS];
@@ -576,23 +548,9 @@ void LimiterApplyBatch(
             if ((rights[i] & (PROCESS_SET_QUOTA | PROCESS_TERMINATE)) !=
                 (PROCESS_SET_QUOTA | PROCESS_TERMINATE)) {
                 results[i].capSkipped = TRUE;
-                results[i].capSkipErr = ERROR_ACCESS_DENIED;
-                results[i].capSkipReason = CAP_SKIP_RIGHTS;
             } else {
-                BOOL skipped = FALSE;
-                int reason = CAP_SKIP_NONE;
                 results[i].attempted[STEP_CAP] = TRUE;
-                if (!ApplyCpuCap(
-                        processes[i], cpuCapPercent, allowNest,
-                        &results[i].err[STEP_CAP], &skipped, &reason)) {
-                    if (skipped) {
-                        results[i].attempted[STEP_CAP] = FALSE;
-                        results[i].capSkipped = TRUE;
-                        results[i].capSkipErr = results[i].err[STEP_CAP];
-                        results[i].capSkipReason = reason;
-                        results[i].err[STEP_CAP] = ERROR_SUCCESS;
-                    }
-                }
+                ApplyCpuCap(processes[i], cpuCapPercent, &results[i].err[STEP_CAP]);
             }
         }
 
