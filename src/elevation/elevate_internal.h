@@ -3,14 +3,21 @@
 
 #include "elevation/elevate.h"
 
+BOOL ElevateEnablePrivilege(LPCWSTR name, DWORD *outError);
+BOOL ElevateQueryIdentity(ELEVATE_STATUS *status);
+BOOL ElevateTiKeyStale(void);
+BOOL ElevateTiRestoreKey(DWORD *outError);
 void ElevateNote(wchar_t *note, size_t capacity, const wchar_t *format, ...);
 BOOL ElevateSelfExecutablePath(wchar_t *buffer, size_t size);
 BOOL ElevateImpersonateWithToken(HANDLE primary, HANDLE *outImpersonation, DWORD *outError);
 BOOL ElevateIsImpersonating(void);
 HANDLE ElevateSystemBaseToken(void);
 void ElevateReleaseSystemBase(void);
-
+DWORD ElevateEnablePrivileges(void);
+void ElevateReleaseService(void);
+BOOL ElevateProcessTier(HANDLE process, int *outTier, DWORD *outError);
 BOOL ElevateSidStringFromToken(HANDLE token, wchar_t *buffer, size_t size, DWORD *outError);
+
 BOOL ElevateTokenSidEquals(HANDLE token, const wchar_t *sidText);
 BOOL ElevateQueryThreadIdentity(ELEVATE_IDENTITY *identity);
 

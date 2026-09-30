@@ -12,8 +12,6 @@ typedef struct _APP_CONFIG {
 
 extern APP_CONFIG g_config;
 
-void ConfigInit(void);
-BOOL ConfigAddTarget(const wchar_t *name);
 BOOL ConfigIsTargetProcess(const wchar_t *name);
 BOOL ConfigParseArgs(int argc, wchar_t **argv);
 

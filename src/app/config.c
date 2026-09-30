@@ -16,7 +16,9 @@ static const wchar_t *const defaultTargets[] = {
 
 APP_CONFIG g_config;
 
-void ConfigInit(void) {
+static BOOL ConfigAddTarget(const wchar_t *name);
+
+static void ConfigInit(void) {
     int i;
 
     memset(&g_config, 0, sizeof(g_config));
@@ -26,7 +28,7 @@ void ConfigInit(void) {
     }
 }
 
-BOOL ConfigAddTarget(const wchar_t *name) {
+static BOOL ConfigAddTarget(const wchar_t *name) {
     if (g_config.targetNameCount >= MAX_TARGET_NAMES ||
         !name || !*name || wcslen(name) >= TARGET_NAME_MAX) {
         return FALSE;

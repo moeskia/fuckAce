@@ -90,11 +90,11 @@ static BOOL TokenElevated(HANDLE token) {
 
 /* 只看令牌里 Administrators 是否 *启用*：被 UAC 过滤的令牌里该组是 deny-only，
    TrustedInstaller 令牌里同样如此，所以不能用 CheckTokenMembership 直接判。 */
-BOOL ElevateTokenHasGroup(HANDLE token, const wchar_t *sidText) {
+static BOOL ElevateTokenHasGroup(HANDLE token, const wchar_t *sidText) {
     return TiTokenGroupEnabled(token, sidText);
 }
 
-BOOL ElevateTokenHasAdminGroup(HANDLE token) {
+static BOOL ElevateTokenHasAdminGroup(HANDLE token) {
     return ElevateTokenHasGroup(token, ELEVATE_ADMIN_SID_STRING);
 }
 
@@ -235,24 +235,13 @@ BOOL ElevateQueryIdentity(ELEVATE_STATUS *status) {
     QueryProcessIdentity(&status->process);
     status->effective = status->process;
     status->tier = status->process.tier;
-    status->landed = status->process.tier >= 0;
     return status->process.valid;
 }
 
 void ElevatePrepareDiagnose(void) {
     memset(&g_elevate, 0, sizeof(g_elevate));
-    g_elevate.requested = g_config.escalatedTier;
     ElevateQueryIdentity(&g_elevate);
     g_elevate.tiKeyStale = ElevateTiKeyStale();
-}
-
-int ElevateCurrentTier(void) {
-    ELEVATE_IDENTITY identity;
-
-    if (!QueryProcessIdentity(&identity)) {
-        return ELEVATE_TIER_NONE;
-    }
-    return identity.tier;
 }
 
 BOOL ElevateProcessTier(HANDLE process, int *outTier, DWORD *outError) {

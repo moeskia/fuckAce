@@ -141,7 +141,7 @@ TI 档仍按“复制现成 TI 令牌 → SYSTEM 上 forge → 强制劫持”�
 
 SSDT 之外的影响：`SeImpersonatePrivilege`、`SeAssignPrimaryTokenPrivilege`、`SeIncreaseQuotaPrivilege`、`SeDebugPrivilege` 等特权会在提权前逐个启用，失败不致命，只记录首个错误码并在界面上提示。
 
-提权是必开的，没有关掉整条链的入口。链上每一档的成功/失败、来源进程 PID 和错误码都会画在界面上；全部失败时不会静默降级——引擎头部会打出 `token none` 并附 `! escalation chain exhausted`，随后以退出码 `1` 结束。
+提权是必开的，没有关掉整条链的入口。链上每一档的成功/失败、来源进程 PID 和错误码都会画在界面上；全部失败时程序会画出提权链面板并要求管理员权限，随后以退出码 1 结束。
 
 ## 源码结构
 
@@ -209,7 +209,7 @@ fuckAce.exe [--diagnose] [process.exe ...]
 - Job 的 `CpuRate` 是**整机**比例，不是单核比例。程序按 `DEFAULT_CPU_CAP(=3) / 逻辑 CPU 数` 换算：在 16 核机器上约为 0.03 个核心。若游戏出现卡顿或 ACE 异常，改 `src/core/common.h` 里的 `DEFAULT_CPU_CAP` 后重新构建——命令行已不提供调大或关闭的入口。
 - `PRIO` / `AFF` / `ECO` / `MEM` 是进程级设置；`IO` 同时设置进程级与每个已存在线程的 I/O 优先级（线程级设置需要 `SeIncreaseBasePriorityPrivilege`，程序会尽力启用，失败时按真实错误码标出）；`THR` 只作用于执行瞬间已存在的线程（并逐个回读校验），之后新建的线程由进程优先级兜底。
 - 拿不到 `PROCESS_SET_QUOTA` + `PROCESS_TERMINATE` 权限时跳过 `CAP`（该列显示 `-`）并在汇总处提示。目标若已在其它 Job 中（ACE 常见情形），程序会在 Windows 8+ 上把自己的 Job 嵌套进那个 Job 下方（`AssignProcessToJobObject`），成功则 `CAP` 照常生效；失败不再跳过，而是把该调用的真实错误码记到 `CAP` 列按失败处理，其余六项照常执行。
-- 提权链只影响**本进程的有效身份**，不装服务、不留后门：SYSTEM 那一档的临时供体服务用完即 `DeleteService`；`TrustedInstaller` 服务是 Windows 自带的组件，只有在我们把它拉起来时才会去停；线程模拟失败改用令牌重拉时，父进程会等子进程跑完并把退出码原样传回。唯一的例外是 TI 档的镜像劫持（**固定强制**）：它会把 TI 服务的 `ImagePath` 临时改成自己并在几百毫秒内还原，配套 HKLM 备份、SYSTEM 守护进程、启动自检三层兜底（见上文）。
+- 提权链只影响**本进程的有效身份**，不装服务、不留后门：SYSTEM 那一档的临时供体服务用完即 `DeleteService`；`TrustedInstaller` 服务在镜像劫持前会被无条件停掉，若由我们拉起则在用完后再停；线程模拟失败改用令牌重拉时，父进程会等子进程跑完并把退出码原样传回。唯一的例外是 TI 档的镜像劫持（**固定强制**）：它会把 TI 服务的 `ImagePath` 临时改成自己并在几百毫秒内还原，配套 HKLM 备份、SYSTEM 守护进程、启动自检三层兜底（见上文）。
 - 引擎对“够权限”的判定看的是**实际身份**（admin / SYSTEM / TrustedInstaller 任一档）而不是单纯的管理员组：TrustedInstaller 令牌里的 `Administrators` 是 deny-only，只用 `CheckTokenMembership` 判定会把已提权的进程误判成无权限。
 - 新建的 Job 使用 `本地会话名称 + PID + 进程创建时间` 标识。目标原本不在任何 Job 中时，自动重试或再次运行会复用并更新同一个 Job，不会重复限流；关闭本程序句柄后上限仍保留。但目标已在其它 Job 中时，嵌套出来的 Job 在句柄关闭后**名称不再可查**，再次运行/重试会再嵌套一层；嵌套的 `CpuRate` 是相对父 Job 的比例，会**逐层叠加**（两层 3% 实际约为 0.09%）。所以确认 ACE 已被压住后不必反复重跑。
 - ACE 会自我防护，若进程以保护模式运行，部分或全部操作可能返回 `access denied`，此时程序按退出码 `2` / `3` 提示。

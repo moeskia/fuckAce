@@ -31,11 +31,9 @@ int wmain(int argc, wchar_t **argv) {
         ElevatePrepareDiagnose();
         UIDiagnosePanel(&g_elevate);
         UIShowCursor(TRUE);
-        return g_elevate.landed ? 0 : 1;
+        return g_elevate.tier >= 0 ? 0 : 1;
     }
 
-    /* 先按 TrustedInstaller → SYSTEM → admin 依次回退拿到最高可用令牌，
-       拿到就地把当前线程切到那个身份；拿不到才退回管理员权限继续。 */
     if (!ElevateRun(argc, argv, &elevate)) {
         UIShowCursor(TRUE);
         return 1;
@@ -52,7 +50,7 @@ int wmain(int argc, wchar_t **argv) {
     }
     if (!ElevateHasRights()) {
         /* 一档都没拿到，重试多少次结果都一样，画一次面板直接退出，别空转。 */
-        UIElevationPanel(&g_elevate, NULL, ELEVATE_NO_RIGHTS_FOOTER);
+        UIElevationPanel(&g_elevate, ELEVATE_NO_RIGHTS_FOOTER);
         UIShowCursor(TRUE);
         return 1;
     }

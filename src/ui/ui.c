@@ -635,7 +635,7 @@ static void UIElevationTierRow(const ELEVATE_TIER_RESULT *info, int tier) {
     UIBoxRow(count, row);
 }
 
-void UIElevationPanel(const ELEVATE_STATUS *status, const ELEVATE_RESULT *result, const char *footer) {
+void UIElevationPanel(const ELEVATE_STATUS *status, const char *footer) {
     int tier;
 
     UIClearScreen();
@@ -649,14 +649,10 @@ void UIElevationPanel(const ELEVATE_STATUS *status, const ELEVATE_RESULT *result
         UIElevationTierRow(&status->tiers[tier], tier);
     }
     UIBoxRule("├", "┤");
-    if (result && result->handoff) {
-        UIBoxLine(COLOR_OK_BG, " → resumed as %ls (pid %lu)", ElevateTierName(result->tier), (unsigned long)result->pid);
-    } else if (result && result->tier >= 0) {
-        UIBoxLine(COLOR_OK_BG, " → running as %ls", ElevateTierName(result->tier));
-    } else if (status->landed && status->tier >= 0) {
+    if (status->tier >= 0) {
         UIBoxLine(COLOR_OK_BG, " → running as %ls", ElevateTierName(status->tier));
     } else {
-        UIBoxLine(COLOR_WARN_BG, " ! no escalation — continuing with the current token");
+        UIBoxLine(COLOR_WARN_BG, " ! no escalation available — refusing to run");
     }
     if (footer && *footer) {
         UIBoxLine(COLOR_FAIL_BG, " %s", footer);
@@ -769,7 +765,7 @@ void UIDiagnosePanel(const ELEVATE_STATUS *status) {
                 (unsigned long)info->error,
                 *reason ? reason : "unknown");
             /* 失败原因单独占一行：这一档现在的诊断信息（借不到 SYSTEM 底座、
-               伪造被拒、劫持跳过…）比一个错误码长得多，挤在错误码后面只会被边框裁掉。
+               伪造被拒、强制劫持失败…）比一个错误码长得多，挤在错误码后面只会被边框裁掉。
                它还常常超过一整行，所以交给按宽度折行的实现，别让最关键的那句被切掉。 */
             if (info->note[0]) {
                 char note[512];
@@ -781,7 +777,7 @@ void UIDiagnosePanel(const ELEVATE_STATUS *status) {
         }
     }
     UIBoxRule("├", "┤");
-    if (status->landed && status->tier >= 0) {
+    if (status->tier >= 0) {
         UIBoxLine(COLOR_OK_BG, " ✓ landed on %ls", ElevateTierName(status->tier));
     } else {
         UIBoxLine(COLOR_FAIL_BG, " ✗ no tier available — the engine will refuse to run");
@@ -795,7 +791,7 @@ void UIDiagnosePanel(const ELEVATE_STATUS *status) {
     UIBoxLine(
         COLOR_HEAD,
         " privilege enable: %s",
-        status->privilegeError == ERROR_SUCCESS ? "ok" : "failed");
+        status->tiers[ELEVATE_TIER_TI].tried ? (status->privilegeError == ERROR_SUCCESS ? "ok" : "failed") : "not attempted");
     if (status->privilegeError != ERROR_SUCCESS) {
         UIBoxLine(COLOR_WARN, "   Error=%lu", (unsigned long)status->privilegeError);
     }
@@ -820,9 +816,7 @@ void UIHandoffSummary(const ELEVATE_RESULT *result) {
     UISegSet(&row[count++], COLOR_HEAD, "  pid %lu · exit code ", (unsigned long)result->pid);
     UISegSet(&row[count++], ok ? COLOR_OK : COLOR_FAIL, "%lu", (unsigned long)result->exitCode);
     UIBoxRow(count, row);
-    if (result->detached) {
-        UIBoxLine(COLOR_FRAME, " window above ran in its own console (UAC always does)");
-    }
+    UIBoxLine(COLOR_FRAME, " window above ran in its own console (UAC always does)");
     UIBoxRule("└", "┘");
     UIClearToEnd();
 }

@@ -1,7 +1,7 @@
 #include "core/common.h"
 #include "app/config.h"
 #include "system/limiter.h"
-#include "elevation/elevate.h"
+#include "elevation/elevate_internal.h"
 #include "system/titoken.h"
 
 static int g_failures;
@@ -93,7 +93,6 @@ static void TestElevateTiers(void) {
     CHECK(status.process.sid[0] != 0, L"process sid empty");
     CHECK(status.process.account[0] != 0, L"process account empty");
     CHECK(status.tier == status.process.tier, L"tier should mirror the process identity");
-    CHECK(ElevateCurrentTier() == status.process.tier, L"current tier mismatch");
     CHECK(status.effective.sessionId != 0xFFFFFFFFu || status.process.sessionId == 0xFFFFFFFFu,
           L"session id mismatch");
 }
@@ -112,7 +111,6 @@ static void TestElevateChildMode(void) {
     CHECK(ElevateRun(2, argv, &result), L"ElevateRun(child) failed");
     CHECK(!result.handoff, L"child mode must not hand off again");
     CHECK(g_elevate.spawned, L"child mode not recorded");
-    CHECK(g_elevate.requested == ELEVATE_TIER_SYSTEM, L"child tier not recorded");
     CHECK(g_elevate.tiers[ELEVATE_TIER_SYSTEM].tried, L"child tier not marked tried");
     CHECK(!g_elevate.tiers[ELEVATE_TIER_TI].tried, L"child mode probed TrustedInstaller");
     CHECK(!g_elevate.tiers[ELEVATE_TIER_ADMIN].tried, L"child mode probed admin");
@@ -166,9 +164,9 @@ static void TestTiHelpers(void) {
     CHECK(OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token), L"open own token failed");
     if (token) {
         /* 组匹配得先证明确实能匹配：Authenticated Users 每个交互令牌里都有。 */
-        CHECK(ElevateTokenHasGroup(token, L"S-1-5-11"), L"group matcher misses authenticated users");
+        CHECK(TiTokenGroupEnabled(token, L"S-1-5-11"), L"group matcher misses authenticated users");
         /* 普通令牌不能凭空声称自己是 TrustedInstaller。 */
-        CHECK(!ElevateTokenHasGroup(token, TITOKEN_TI_SID_STRING), L"plain token claims the TI sid");
+        CHECK(!TiTokenGroupEnabled(token, TITOKEN_TI_SID_STRING), L"plain token claims the TI sid");
         CloseHandle(token);
     }
 }
@@ -177,10 +175,14 @@ static void TestTiHelpers(void) {
    这是能在普通权限下真正跑到的一段伪造代码（参数拼装、ntdll 解析、特权检查），
    也是防止“没权限却造出一个看似成功的令牌”的兜底用例。 */
 static void TestTiForgeRefusal(void) {
-    int tier = ElevateCurrentTier();
+    ELEVATE_STATUS status;
+    int tier;
     DWORD error = ERROR_SUCCESS;
     HANDLE token;
 
+    memset(&status, 0, sizeof(status));
+    ElevateQueryIdentity(&status);
+    tier = status.process.tier;
     if (tier == ELEVATE_TIER_SYSTEM || tier == ELEVATE_TIER_TI) {
         fwprintf(stderr, L"SKIP forge refusal case: already running as SYSTEM or above\n");
         return;

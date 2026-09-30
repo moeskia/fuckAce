@@ -43,7 +43,6 @@ void UIDrawTiming(ULONGLONG elapsedMs, const char *machine);
 int UICountdown(const char *label, const char *hint, int seconds);
 void UIElevationPanel(
     const struct _ELEVATE_STATUS *status,
-    const struct _ELEVATE_RESULT *result,
     const char *footer);
 void UIDiagnosePanel(const struct _ELEVATE_STATUS *status);
 void UIHandoffSummary(const struct _ELEVATE_RESULT *result);

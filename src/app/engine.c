@@ -39,7 +39,7 @@ int EngineRunOnce(BOOL isFirst) {
     UIResetTiming();
     if (!ElevateHasRights()) {
         /* 提权链已经把每一档的失败原因记在 g_elevate 里，直接摊开给用户看。 */
-        UIElevationPanel(&g_elevate, NULL, ELEVATE_NO_RIGHTS_FOOTER);
+        UIElevationPanel(&g_elevate, ELEVATE_NO_RIGHTS_FOOTER);
         return 1;
     }
 
@@ -84,11 +84,7 @@ int EngineRunOnce(BOOL isFirst) {
         /* 徽章只带前导空格（与上面 " ✓ admin" 一致），后面每一项自带 " · " 分隔，
            这样不会出现 "token  TrustedInstaller  session 1" 这种双空格。 */
         UISegSet(&token[count++], COLOR_HEAD, " token");
-        if (g_elevate.landed && g_elevate.tier >= 0) {
-            UISegSet(&token[count++], COLOR_OK_BG, " %ls", ElevateTierName(g_elevate.tier));
-        } else {
-            UISegSet(&token[count++], COLOR_WARN_BG, " none");
-        }
+        UISegSet(&token[count++], COLOR_OK_BG, " %ls", ElevateTierName(g_elevate.tier));
         if (g_elevate.spawned) {
             UISegSet(&token[count++], COLOR_FRAME, " · via parent token");
         }
@@ -105,9 +101,6 @@ int EngineRunOnce(BOOL isFirst) {
             UISegSet(&token[count++], COLOR_HEAD, " · session %lu", (unsigned long)g_elevate.process.sessionId);
         }
         UIBoxRow(count, token);
-    }
-    if (!g_elevate.landed) {
-        UIBoxLine(COLOR_WARN, " ! escalation chain exhausted — continuing with the current token");
     }
     if (g_elevate.privilegeError != ERROR_SUCCESS) {
         UIBoxLine(COLOR_WARN, " ! privilege enable failed (Error=%lu)", (unsigned long)g_elevate.privilegeError);

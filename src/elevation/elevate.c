@@ -16,8 +16,6 @@ static HANDLE g_impersonation = NULL;
 static HANDLE g_elevateMutex = NULL;
 static BOOL g_elevateMutexHeld = FALSE;
 
-/* 落地到本进程的实现放在后面，TI 的伪造/劫持路径要先用它借用 SYSTEM 身份。 */
-BOOL ElevateImpersonateWithToken(HANDLE primary, HANDLE *outImpersonation, DWORD *outError);
 
 /* 截断安全的宽字符格式化：swprintf 在放不下时可能既不返回长度也不补结尾 0，
    而这里的 note 就是要给人看的诊断信息，绝不能变成未终止的缓冲区。 */
@@ -133,10 +131,8 @@ void ElevateRevert(void) {
         CloseHandle(g_impersonation);
         g_impersonation = NULL;
     }
-    g_elevate.impersonating = FALSE;
     g_elevate.effective = g_elevate.process;
     g_elevate.tier = g_elevate.process.tier;
-    g_elevate.landed = g_elevate.process.tier >= 0;
     ElevateReleaseSystemBase();
 }
 
@@ -316,10 +312,8 @@ static BOOL StartElevatedSelf(int argc, wchar_t **argv, HANDLE *outProcess, DWOR
 
 static void MarkHandoff(int tier, DWORD pid) {
     g_elevate.tiers[tier].ok = TRUE;
-    g_elevate.tiers[tier].handoff = TRUE;
     g_elevate.tiers[tier].pid = pid;
     g_elevate.tier = tier;
-    g_elevate.landed = TRUE;
     wcscpy(g_elevate.tiers[tier].note, L"token handoff");
 }
 
@@ -389,7 +383,7 @@ static BOOL TryHandoff(
     MarkHandoff(tier, pid);
     /* 令牌已经复制进子进程，服务可以收工，恢复系统原状。 */
     ElevateReleaseService();
-    UIElevationPanel(&g_elevate, NULL, NULL);
+    UIElevationPanel(&g_elevate, NULL);
     ElevateMutexRelease();
     if (ResumeThread(process.hThread) == (DWORD)-1) {
         error = GetLastError();
@@ -399,11 +393,9 @@ static BOOL TryHandoff(
         CloseHandle(process.hProcess);
         g_elevate.tiers[tier].pid = 0;
         g_elevate.tiers[tier].ok = FALSE;
-        g_elevate.tiers[tier].handoff = FALSE;
         g_elevate.tiers[tier].error = error;
         wcscpy(g_elevate.tiers[tier].note, L"ResumeThread failed");
         g_elevate.tier = g_elevate.process.tier;
-        g_elevate.landed = g_elevate.process.tier >= 0;
         return FALSE;
     }
     CloseHandle(process.hThread);
@@ -451,7 +443,7 @@ static BOOL ElevateTiRepairWithSystemIdentity(void) {
     return ok;
 }
 
-BOOL ElevateAcquireToken(int tier, ELEVATE_TIER_RESULT *result, HANDLE *outToken) {
+static BOOL ElevateAcquireToken(int tier, ELEVATE_TIER_RESULT *result, HANDLE *outToken) {
     *outToken = NULL;
     result->ok = FALSE;
     result->error = ERROR_SUCCESS;
@@ -472,7 +464,6 @@ BOOL ElevateRun(int argc, wchar_t **argv, ELEVATE_RESULT *result) {
     result->tier = ELEVATE_TIER_NONE;
     ElevateReleaseSystemBase();
     memset(&g_elevate, 0, sizeof(g_elevate));
-    g_elevate.requested = g_config.escalatedTier;
     ElevateQueryIdentity(&g_elevate);
     g_elevate.tiKeyStale = ElevateTiKeyStale();
 
@@ -483,7 +474,6 @@ BOOL ElevateRun(int argc, wchar_t **argv, ELEVATE_RESULT *result) {
         ELEVATE_TIER_RESULT *claimed = &g_elevate.tiers[g_config.escalatedTier];
 
         g_elevate.spawned = TRUE;
-        g_elevate.landed = g_elevate.process.tier != ELEVATE_TIER_NONE;
         claimed->tried = TRUE;
         claimed->ok = g_elevate.process.tier == g_config.escalatedTier;
         if (claimed->ok) {
@@ -532,7 +522,6 @@ BOOL ElevateRun(int argc, wchar_t **argv, ELEVATE_RESULT *result) {
                 wcscpy(info->source, L"current process");
                 wcscpy(info->note, g_elevate.process.elevated ? L"already elevated" : L"admin group enabled");
                 g_elevate.tier = ELEVATE_TIER_ADMIN;
-                g_elevate.landed = TRUE;
                 result->tier = ELEVATE_TIER_ADMIN;
                 /* 前面 TI 档可能已经把 TrustedInstaller 服务拉起来了，成功退出前也要收摊。 */
                 ElevateReleaseService();
@@ -553,7 +542,7 @@ BOOL ElevateRun(int argc, wchar_t **argv, ELEVATE_RESULT *result) {
                     result->detached = TRUE;
                     /* 提权后的进程有自己的控制台，先把父进程这边的画面画完再去等它。 */
                     ElevateReleaseService();
-                    UIElevationPanel(&g_elevate, NULL, NULL);
+                    UIElevationPanel(&g_elevate, NULL);
                     WaitForSingleObject(elevated, INFINITE);
                     GetExitCodeProcess(elevated, &exitCode);
                     CloseHandle(elevated);
@@ -579,7 +568,6 @@ BOOL ElevateRun(int argc, wchar_t **argv, ELEVATE_RESULT *result) {
             wcscpy(info->source, L"current process");
             wcscpy(info->note, L"already running at this tier");
             g_elevate.tier = tier;
-            g_elevate.landed = TRUE;
             result->tier = tier;
             ElevateReleaseService();
             ElevateMutexRelease();
@@ -597,12 +585,9 @@ BOOL ElevateRun(int argc, wchar_t **argv, ELEVATE_RESULT *result) {
                 ElevateQueryThreadIdentity(&identity);
                 if (identity.tier == tier) {
                     g_impersonation = impersonation;
-                    g_elevate.impersonating = TRUE;
                     g_elevate.effective = identity;
                     g_elevate.tier = tier;
-                    g_elevate.landed = TRUE;
                     info->ok = TRUE;
-                    info->impersonated = TRUE;
                     wcscpy(info->note, L"thread impersonation");
                     result->tier = tier;
                     /* 身份已经挂在当前线程上，TrustedInstaller 服务可以停掉了。 */

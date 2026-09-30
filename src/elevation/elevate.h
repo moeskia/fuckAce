@@ -34,7 +34,6 @@ enum {
 #define ELEVATE_TI_IMAGE_VALUE L"ImagePath"
 #define ELEVATE_TI_BACKUP_KEY L"SOFTWARE\\fuckAce"
 #define ELEVATE_TI_BACKUP_VALUE L"TiImagePathBackup"
-#define ELEVATE_TI_BACKUP_PID_VALUE L"TiImagePathBackupPid"
 #define ELEVATE_TI_REPAIR_FLAG L"--tirepair="
 #define ELEVATE_TI_GUARDIAN_WAIT_MS 30000
 #define ELEVATE_TI_STOP_WAIT_MS 15000
@@ -59,8 +58,6 @@ typedef struct _ELEVATE_TIER_RESULT {
     DWORD error;
     DWORD pid;
     BOOL startedService;
-    BOOL impersonated;
-    BOOL handoff;
     wchar_t source[64];
     /* 96 个字符会把"哪条路为什么没成"这种复合诊断从中间切断，
        而这段文字正是提权失败时唯一有用的东西。给足空间，剩下的交给界面折行。 */
@@ -68,10 +65,7 @@ typedef struct _ELEVATE_TIER_RESULT {
 } ELEVATE_TIER_RESULT;
 
 typedef struct _ELEVATE_STATUS {
-    int requested;   /* 父进程通过 --escalated=N 声明的档位，-1 表示本进程自己提权 */
     int tier;        /* 当前生效档位，ELEVATE_TIER_NONE 表示没有拿到 */
-    BOOL landed;     /* 是否成功落到目标档位 */
-    BOOL impersonating;
     BOOL spawned;    /* 本进程是被父进程用令牌拉起的 */
     BOOL tiKeyStale; /* 上次劫持没来得及还原：HKLM 里还留着 ImagePath 备份 */
     DWORD privilegeError;
@@ -105,18 +99,7 @@ static inline BOOL ElevateHasRights(void) {
 const wchar_t *ElevateTierName(int tier);
 const char *ElevateTypeName(DWORD elevationType);
 
-BOOL ElevateEnablePrivilege(LPCWSTR name, DWORD *outError);
-DWORD ElevateEnablePrivileges(void);
-BOOL ElevateTokenHasAdminGroup(HANDLE token);
-BOOL ElevateTokenHasGroup(HANDLE token, const wchar_t *sidText);
-
-BOOL ElevateQueryIdentity(ELEVATE_STATUS *status);
 void ElevatePrepareDiagnose(void);
-int ElevateCurrentTier(void);
-BOOL ElevateProcessTier(HANDLE process, int *outTier, DWORD *outError);
-
-BOOL ElevateAcquireToken(int tier, ELEVATE_TIER_RESULT *result, HANDLE *outToken);
-void ElevateReleaseService(void);
 void ElevateRevert(void);
 
 /* 服务供体模式：SCM 拉起的是 session 0、无控制台的进程，
@@ -128,11 +111,6 @@ int ElevateDonorMain(void);
    同样是 session 0、无控制台，也要在参数解析之前分流。 */
 BOOL ElevateTiRepairRequested(int argc, wchar_t **argv, DWORD *outParentPid);
 int ElevateTiRepairMain(DWORD parentPid);
-
-/* 劫持过、但没还原干净的痕迹（只读检查，不改任何东西）。 */
-BOOL ElevateTiKeyStale(void);
-/* 幂等还原：备份不存在就什么都不做；只有当当前值确实是我们写进去的才覆盖回去。 */
-BOOL ElevateTiRestoreKey(DWORD *outError);
 
 BOOL ElevateRun(int argc, wchar_t **argv, ELEVATE_RESULT *result);
 

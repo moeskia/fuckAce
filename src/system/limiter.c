@@ -1,17 +1,13 @@
 #include "system/limiter.h"
 #include "app/config.h"
-#include "elevation/elevate.h"
+#include "elevation/elevate_internal.h"
 
 static DWORD NtError(NTSTATUS status) {
     return (DWORD)RtlNtStatusToDosError(status);
 }
 
-static BOOL EnablePrivilege(LPCWSTR name, DWORD *outError) {
-    return ElevateEnablePrivilege(name, outError);
-}
-
 BOOL LimiterEnableDebugPrivilege(DWORD *outError) {
-    return EnablePrivilege(SE_DEBUG_NAME, outError);
+    return ElevateEnablePrivilege(SE_DEBUG_NAME, outError);
 }
 
 DWORD LimiterGetCpuCount(DWORD group) {
@@ -269,7 +265,7 @@ static void EnsureThreadIoPrivilege(void) {
 
     if (!tried) {
         tried = TRUE;
-        EnablePrivilege(SE_INCREASE_BASE_PRIORITY_NAME, &ignored);
+        ElevateEnablePrivilege(SE_INCREASE_BASE_PRIORITY_NAME, &ignored);
     }
 }
 

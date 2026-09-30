@@ -101,7 +101,6 @@ static void TiDropBackup(void) {
         return;
     }
     RegDeleteValueW(key, ELEVATE_TI_BACKUP_VALUE);
-    RegDeleteValueW(key, ELEVATE_TI_BACKUP_PID_VALUE);
     RegCloseKey(key);
     RegDeleteKeyW(HKEY_LOCAL_MACHINE, ELEVATE_TI_BACKUP_KEY);
 }
