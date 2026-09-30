@@ -526,7 +526,12 @@ static BOOL ElevateAcquireTrustedInstallerTokenViaHijack(
             wcscpy(result->note, L"TI is running and cannot be stopped");
             goto done;
         }
-        ControlService(stopper, SERVICE_CONTROL_STOP, &status);
+        if (!ControlService(stopper, SERVICE_CONTROL_STOP, &status)) {
+            result->error = GetLastError();
+            CloseServiceHandle(stopper);
+            wcscpy(result->note, L"cannot send stop control to TI");
+            goto done;
+        }
         for (attempt = 0; attempt < ELEVATE_TI_STOP_WAIT_MS / 100; attempt++) {
             memset(&status, 0, sizeof(status));
 

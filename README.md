@@ -14,7 +14,7 @@
 | MEM | 内存优先级 | `MEMORY_PRIORITY_VERY_LOW` |
 | THR | 线程优先级 | 每个线程 `THREAD_PRIORITY_IDLE` |
 
-每项设置后都会回读校验（`IO` 进程级用 `NtQueryInformationProcess(ProcessIoPriority)`、线程级用 `NtQueryInformationThread(ThreadIoPriority)`，`THR` 用 `GetThreadPriority` 逐个线程复核）；只有真正生效才算 OK，否则标 `✗` 并在下一行给出错误码与原因。回读本身失败时同样按未生效处理，显示为 `✗nv`，不会被当成成功。
+每项设置后都会回读校验（`IO` 进程级用 `NtQueryInformationProcess(ProcessIoPriority)`、线程级用 `NtQueryInformationThread(ThreadIoPriority)`，`THR` 用 `GetThreadPriority` 逐个线程复核）；只有真正生效才算 OK。回读 API 本身失败时按该 API 的真实错误码标 `✗<code>`，回读成功但读到的值不符时显示为 `✗nv`，两种情况都在下一行给出原因，不会被当成成功。
 
 `ECO` 是唯一例外：Windows 的 `GetProcessInformation(ProcessPowerThrottling)` 在不少版本上并未实现（返回 `87`），无法回读。此时设置已下发但无法核实，显示为 `OK~`（黄色）并按成功计入退出码；若回读成功却读到未开启，仍按 `✗` 处理。
 

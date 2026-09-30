@@ -170,8 +170,11 @@ static BOOL SetVeryLowMemoryPriority(HANDLE process, DWORD *outError) {
         *outError = GetLastError();
         return FALSE;
     }
-    if (!GetProcessInformation(process, ProcessMemoryPriority, &check, sizeof(check)) ||
-        check.MemoryPriority != MEMORY_PRIORITY_VERY_LOW) {
+    if (!GetProcessInformation(process, ProcessMemoryPriority, &check, sizeof(check))) {
+        *outError = GetLastError();
+        return FALSE;
+    }
+    if (check.MemoryPriority != MEMORY_PRIORITY_VERY_LOW) {
         *outError = ERROR_NOT_VERIFIED;
         return FALSE;
     }
@@ -441,6 +444,12 @@ static void RunThreadPass(
             }
         }
     }
+    for (i = 0; i < count; i++) {
+        if (valid[i] && results[i].thrTotal == 0 &&
+            results[i].err[STEP_THR] == ERROR_SUCCESS) {
+            results[i].err[STEP_THR] = ERROR_NOT_VERIFIED;
+        }
+    }
 }
 
 static HANDLE OpenTargetProcess(DWORD pid, DWORD *outRights, DWORD *outError) {
@@ -538,8 +547,13 @@ void LimiterApplyBatch(
         results[i].attempted[STEP_PRI] = TRUE;
         if (!SetPriorityClass(processes[i], IDLE_PRIORITY_CLASS)) {
             results[i].err[STEP_PRI] = GetLastError();
-        } else if (GetPriorityClass(processes[i]) != IDLE_PRIORITY_CLASS) {
-            results[i].err[STEP_PRI] = ERROR_NOT_VERIFIED;
+        } else {
+            DWORD actualPriority = GetPriorityClass(processes[i]);
+            if (actualPriority == 0) {
+                results[i].err[STEP_PRI] = GetLastError();
+            } else if (actualPriority != IDLE_PRIORITY_CLASS) {
+                results[i].err[STEP_PRI] = ERROR_NOT_VERIFIED;
+            }
         }
 
         results[i].attempted[STEP_AFF] = TRUE;
@@ -548,8 +562,9 @@ void LimiterApplyBatch(
         } else {
             DWORD_PTR processMask = 0;
             DWORD_PTR systemMask = 0;
-            if (!GetProcessAffinityMask(processes[i], &processMask, &systemMask) ||
-                processMask != affinityMask) {
+            if (!GetProcessAffinityMask(processes[i], &processMask, &systemMask)) {
+                results[i].err[STEP_AFF] = GetLastError();
+            } else if (processMask != affinityMask) {
                 results[i].err[STEP_AFF] = ERROR_NOT_VERIFIED;
             }
         }
