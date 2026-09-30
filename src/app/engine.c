@@ -106,7 +106,7 @@ int EngineRunOnce(BOOL isFirst) {
         }
         UIBoxRow(count, token);
     }
-    if (g_elevate.mode != ELEVATE_MODE_OFF && !g_elevate.landed) {
+    if (!g_elevate.landed) {
         UIBoxLine(COLOR_WARN, " ! escalation chain exhausted — continuing with the current token");
     }
     if (g_elevate.privilegeError != ERROR_SUCCESS) {

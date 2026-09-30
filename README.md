@@ -115,14 +115,9 @@ ACE 的 `SGuardSvc64.exe` 跑在 SYSTEM 下，某些操作管理员权限也够�
 >
 > `--diagnose` 的 `effective token` 一栏把两者分开写：`identity` 是真正的访问身份（`TrustedInstaller` / `SYSTEM` / `admin`），`logon` 是令牌的 `TokenUser`。引擎头部那个徽章也改成打 `NT SERVICE\TrustedInstaller` 而不是 `TokenUser`，免得看起来像提权没生效。
 
-默认**开且强制**（`TI_HIJACK_FORCE`）：TI 是这套工具的默认档位，而 Windows 11 客户端上只有劫持能拿到 TI，所以它不能是可选件，命令行也不再提供关闭入口。为了拿到 TI 身份，连正在跑的 `TrustedInstaller` 也会先被停掉再劫持（停不掉就放弃并回退 SYSTEM）；代价是撞上正在装更新时会把那次维护打断。
+TI 档仍按“复制现成 TI 令牌 → SYSTEM 上 forge → 强制劫持”的顺序尝试；劫持不再提供关闭或安全闸门。为了拿到 TI 身份，正在运行的 `TrustedInstaller` 也会被无条件停掉（停不掉就放弃并回退 SYSTEM）；代价是撞上正在装更新时会把那次维护打断。
 
-| 取值 | 行为 |
-| --- | --- |
-| `TI_HIJACK_FORCE`（固定） | 连正在跑的也停掉再劫持（停不掉就放弃并回退）。用完**不会**替你把它重新拉起来 —— 它是按需启动的，Windows 需要时会自己起来 |
-| `TI_HIJACK_SAFE` / `TI_HIJACK_OFF` | 保留的状态常量，命令行不可达 |
-
-判据取的是**我们动手之前**的服务状态：方法一为了拿令牌会自己把 TI 拉起来，若拿"当前状态"当判据，会把刚启动的服务误判成"系统正在维护"。
+劫持用完**不会**替你重新拉起 `TrustedInstaller` —— 它是按需启动的，Windows 需要时会自己起来。
 
 劫持必须先把服务停掉，而且劫持完绝不能把供体留在系统里——那就是一个 TI 身份的后门。所以"保留自己拉起的 TI 服务"这种诉求在本工具里不存在。
 

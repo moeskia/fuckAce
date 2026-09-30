@@ -466,19 +466,13 @@ BOOL ElevateAcquireToken(int tier, ELEVATE_TIER_RESULT *result, HANDLE *outToken
     return FALSE;
 }
 BOOL ElevateRun(int argc, wchar_t **argv, ELEVATE_RESULT *result) {
-    int order[ELEVATE_TIER_COUNT];
-    int orderCount = 0;
     int i;
 
     memset(result, 0, sizeof(*result));
     result->tier = ELEVATE_TIER_NONE;
     ElevateReleaseSystemBase();
     memset(&g_elevate, 0, sizeof(g_elevate));
-    g_elevate.mode = g_config.elevateMode;
-    g_elevate.use = g_config.elevateUse;
-    g_elevate.fallback = g_config.elevateFallback;
     g_elevate.requested = g_config.escalatedTier;
-    g_elevate.keepService = g_config.elevateKeepService;
     ElevateQueryIdentity(&g_elevate);
     g_elevate.tiKeyStale = ElevateTiKeyStale();
 
@@ -503,21 +497,13 @@ BOOL ElevateRun(int argc, wchar_t **argv, ELEVATE_RESULT *result) {
         result->tier = g_elevate.tier;
         return TRUE;
     }
-    if (g_config.elevateMode == ELEVATE_MODE_OFF) {
-        result->tier = g_elevate.tier;
-        return TRUE;
-    }
-
     {
         DWORD mutexError = ERROR_SUCCESS;
 
         if (!ElevateMutexAcquire(&mutexError)) {
-            int tier = g_config.elevateMode == ELEVATE_MODE_AUTO ? ELEVATE_TIER_TI
-                                                                 : g_config.elevateMode;
-
-            g_elevate.tiers[tier].tried = TRUE;
-            g_elevate.tiers[tier].error = mutexError;
-            wcscpy(g_elevate.tiers[tier].note, L"another fuckAce instance is active");
+            g_elevate.tiers[ELEVATE_TIER_TI].tried = TRUE;
+            g_elevate.tiers[ELEVATE_TIER_TI].error = mutexError;
+            wcscpy(g_elevate.tiers[ELEVATE_TIER_TI].note, L"another fuckAce instance is active");
             result->tier = g_elevate.tier;
             return TRUE;
         }
@@ -531,19 +517,8 @@ BOOL ElevateRun(int argc, wchar_t **argv, ELEVATE_RESULT *result) {
         g_elevate.tiKeyStale = ElevateTiKeyStale();
     }
 
-    if (g_config.elevateMode == ELEVATE_MODE_AUTO) {
-        order[orderCount++] = ELEVATE_TIER_TI;
-    } else {
-        order[orderCount++] = g_config.elevateMode;
-    }
-    if (g_config.elevateFallback) {
-        for (i = order[0] + 1; i < ELEVATE_TIER_COUNT; i++) {
-            order[orderCount++] = i;
-        }
-    }
-
-    for (i = 0; i < orderCount; i++) {
-        int tier = order[i];
+    for (i = 0; i < ELEVATE_TIER_COUNT; i++) {
+        int tier = i;
         ELEVATE_TIER_RESULT *info = &g_elevate.tiers[tier];
         HANDLE token = NULL;
 
@@ -613,7 +588,7 @@ BOOL ElevateRun(int argc, wchar_t **argv, ELEVATE_RESULT *result) {
         if (!ElevateAcquireToken(tier, info, &token)) {
             continue;
         }
-        if (g_elevate.use != ELEVATE_USE_SPAWN) {
+        {
             HANDLE impersonation = NULL;
             DWORD error = ERROR_SUCCESS;
             ELEVATE_IDENTITY identity;
@@ -641,10 +616,6 @@ BOOL ElevateRun(int argc, wchar_t **argv, ELEVATE_RESULT *result) {
                 error = ERROR_NOT_VERIFIED;
             }
             info->error = error;
-            if (g_elevate.use == ELEVATE_USE_IMPERSONATE) {
-                CloseHandle(token);
-                continue;
-            }
         }
         if (TryHandoff(tier, token, argc, argv, result)) {
             info->ok = TRUE;

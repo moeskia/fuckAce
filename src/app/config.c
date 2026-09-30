@@ -20,12 +20,6 @@ void ConfigInit(void) {
     int i;
 
     memset(&g_config, 0, sizeof(g_config));
-    g_config.elevateMode = ELEVATE_MODE_AUTO;
-    g_config.elevateUse = ELEVATE_USE_AUTO;
-    g_config.elevateFallback = TRUE;
-    g_config.elevateServiceDonor = TRUE;
-    g_config.tiForge = TRUE;
-    g_config.tiHijack = TI_HIJACK_FORCE;
     g_config.escalatedTier = ELEVATE_TIER_NONE;
     for (i = 0; i < (int)(sizeof(defaultTargets) / sizeof(defaultTargets[0])); i++) {
         ConfigAddTarget(defaultTargets[i]);

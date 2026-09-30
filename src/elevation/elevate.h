@@ -13,18 +13,6 @@ enum {
 
 #define ELEVATE_TIER_NONE (-1)
 
-/* 固定值：从最高档位开始依次回退 */
-#define ELEVATE_MODE_AUTO (-1)
-/* 保留状态常量：命令行已不提供“不提权”入口 */
-#define ELEVATE_MODE_OFF ELEVATE_TIER_COUNT
-
-/* 拿到令牌之后的落地方式 */
-enum {
-    ELEVATE_USE_AUTO = 0,     /* 先线程模拟，失败再重新拉起 */
-    ELEVATE_USE_IMPERSONATE,  /* 只做线程模拟 */
-    ELEVATE_USE_SPAWN         /* 只用令牌重新拉起自身 */
-};
-
 #define ELEVATE_TI_SID_STRING \
     L"S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464"
 #define ELEVATE_SYSTEM_SID_STRING L"S-1-5-18"
@@ -80,15 +68,11 @@ typedef struct _ELEVATE_TIER_RESULT {
 } ELEVATE_TIER_RESULT;
 
 typedef struct _ELEVATE_STATUS {
-    int mode;        /* 固定 ELEVATE_MODE_AUTO，命令行已移除 --as= */
-    int use;         /* ELEVATE_USE_* */
-    BOOL fallback;   /* 是否允许向更低档位回退 */
     int requested;   /* 父进程通过 --escalated=N 声明的档位，-1 表示本进程自己提权 */
     int tier;        /* 当前生效档位，ELEVATE_TIER_NONE 表示没有拿到 */
     BOOL landed;     /* 是否成功落到目标档位 */
     BOOL impersonating;
     BOOL spawned;    /* 本进程是被父进程用令牌拉起的 */
-    BOOL keepService;
     BOOL tiKeyStale; /* 上次劫持没来得及还原：HKLM 里还留着 ImagePath 备份 */
     DWORD privilegeError;
     ELEVATE_IDENTITY process;    /* 进程令牌身份 */
@@ -119,9 +103,6 @@ static inline BOOL ElevateHasRights(void) {
     "✗ administrator privileges required · rerun with --diagnose"
 
 const wchar_t *ElevateTierName(int tier);
-const char *ElevateTierTag(int tier);
-int ElevateTierFromTag(const wchar_t *text, BOOL *outOk);
-const char *ElevateUseName(int use);
 const char *ElevateTypeName(DWORD elevationType);
 
 BOOL ElevateEnablePrivilege(LPCWSTR name, DWORD *outError);

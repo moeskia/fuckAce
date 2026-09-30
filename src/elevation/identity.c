@@ -219,28 +219,6 @@ const wchar_t *ElevateTierName(int tier) {
     return L"none";
 }
 
-const char *ElevateTierTag(int tier) {
-    switch (tier) {
-    case ELEVATE_TIER_TI:
-        return "TI";
-    case ELEVATE_TIER_SYSTEM:
-        return "SYSTEM";
-    case ELEVATE_TIER_ADMIN:
-        return "admin";
-    }
-    return "-";
-}
-
-const char *ElevateUseName(int use) {
-    switch (use) {
-    case ELEVATE_USE_IMPERSONATE:
-        return "impersonate";
-    case ELEVATE_USE_SPAWN:
-        return "spawn";
-    }
-    return "auto";
-}
-
 const char *ElevateTypeName(DWORD elevationType) {
     switch (elevationType) {
     case TokenElevationTypeDefault:
@@ -253,31 +231,6 @@ const char *ElevateTypeName(DWORD elevationType) {
     return "unknown";
 }
 
-int ElevateTierFromTag(const wchar_t *text, BOOL *outOk) {
-    if (outOk) {
-        *outOk = TRUE;
-    }
-    if (!text || !*text) {
-        if (outOk) {
-            *outOk = FALSE;
-        }
-        return ELEVATE_TIER_NONE;
-    }
-    if (_wcsicmp(text, L"ti") == 0 || _wcsicmp(text, L"trustedinstaller") == 0) {
-        return ELEVATE_TIER_TI;
-    }
-    if (_wcsicmp(text, L"system") == 0 || _wcsicmp(text, L"local system") == 0) {
-        return ELEVATE_TIER_SYSTEM;
-    }
-    if (_wcsicmp(text, L"admin") == 0 || _wcsicmp(text, L"administrator") == 0) {
-        return ELEVATE_TIER_ADMIN;
-    }
-    if (outOk) {
-        *outOk = FALSE;
-    }
-    return ELEVATE_TIER_NONE;
-}
-
 BOOL ElevateQueryIdentity(ELEVATE_STATUS *status) {
     QueryProcessIdentity(&status->process);
     status->effective = status->process;
@@ -288,11 +241,7 @@ BOOL ElevateQueryIdentity(ELEVATE_STATUS *status) {
 
 void ElevatePrepareDiagnose(void) {
     memset(&g_elevate, 0, sizeof(g_elevate));
-    g_elevate.mode = g_config.elevateMode;
-    g_elevate.use = g_config.elevateUse;
-    g_elevate.fallback = g_config.elevateFallback;
     g_elevate.requested = g_config.escalatedTier;
-    g_elevate.keepService = g_config.elevateKeepService;
     ElevateQueryIdentity(&g_elevate);
     g_elevate.tiKeyStale = ElevateTiKeyStale();
 }

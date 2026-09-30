@@ -1,5 +1,4 @@
 #include "elevation/elevate.h"
-#include "app/config.h"
 #include "system/titoken.h"
 #include "elevation/elevate_internal.h"
 
@@ -105,7 +104,7 @@ void ElevateReleaseService(void) {
     SERVICE_STATUS status;
     int attempt;
 
-    if (!g_elevate.tiers[ELEVATE_TIER_TI].startedService || g_elevate.keepService) {
+    if (!g_elevate.tiers[ELEVATE_TIER_TI].startedService) {
         return;
     }
     g_elevate.tiers[ELEVATE_TIER_TI].startedService = FALSE;
@@ -420,11 +419,6 @@ static BOOL ElevateAcquireSystemTokenViaService(ELEVATE_TIER_RESULT *result, HAN
     BOOL ok = FALSE;
     int attempt;
 
-    if (!g_config.elevateServiceDonor) {
-        result->error = ERROR_NOT_SUPPORTED;
-        wcscpy(result->note, L"service donor disabled");
-        return FALSE;
-    }
     if (!ElevateSelfExecutablePath(executable, sizeof(executable) / sizeof(executable[0]))) {
         result->error = ERROR_INSUFFICIENT_BUFFER;
         wcscpy(result->note, L"own executable path too long");

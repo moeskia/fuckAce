@@ -71,13 +71,6 @@ static void TestElevateConfig(void) {
     const wchar_t *escalatedEmpty[] = {L"--escalated="};
 
     CHECK(ParseArgs(NULL, 0), L"elevate default parse failed");
-    CHECK(g_config.elevateMode == ELEVATE_MODE_AUTO, L"elevate default mode mismatch");
-    CHECK(g_config.elevateUse == ELEVATE_USE_AUTO, L"elevate default use mismatch");
-    CHECK(g_config.elevateFallback, L"fallback should default on");
-    CHECK(g_config.elevateServiceDonor, L"service donor should default on");
-    CHECK(g_config.tiForge, L"TI forge should default on");
-    CHECK(g_config.tiHijack == TI_HIJACK_FORCE, L"TI hijack should default to FORCE");
-    CHECK(!g_config.elevateKeepService, L"keep-ti should default off");
     CHECK(g_config.escalatedTier == ELEVATE_TIER_NONE, L"escalated default mismatch");
     CHECK(!g_config.diagnose, L"diagnose should default off");
     CHECK(ParseArgs(escalated, 1) && g_config.escalatedTier == 1, L"--escalated=1 not parsed");
@@ -87,23 +80,12 @@ static void TestElevateConfig(void) {
 }
 
 static void TestElevateTiers(void) {
-    BOOL ok = TRUE;
     ELEVATE_STATUS status;
 
     CHECK(wcscmp(ElevateTierName(ELEVATE_TIER_TI), L"TrustedInstaller") == 0, L"TI name mismatch");
     CHECK(wcscmp(ElevateTierName(ELEVATE_TIER_SYSTEM), L"SYSTEM") == 0, L"SYSTEM name mismatch");
     CHECK(wcscmp(ElevateTierName(ELEVATE_TIER_ADMIN), L"admin") == 0, L"admin name mismatch");
     CHECK(wcscmp(ElevateTierName(ELEVATE_TIER_NONE), L"none") == 0, L"none name mismatch");
-    CHECK(strcmp(ElevateTierTag(ELEVATE_TIER_TI), "TI") == 0, L"TI tag mismatch");
-    CHECK(strcmp(ElevateTierTag(ELEVATE_TIER_COUNT + 5), "-") == 0, L"unknown tag mismatch");
-    CHECK(ElevateTierFromTag(L"ti", &ok) == ELEVATE_TIER_TI && ok, L"tag ti mismatch");
-    CHECK(ElevateTierFromTag(L"System", &ok) == ELEVATE_TIER_SYSTEM && ok, L"tag system mismatch");
-    CHECK(ElevateTierFromTag(L"administrator", &ok) == ELEVATE_TIER_ADMIN && ok, L"tag admin mismatch");
-    CHECK(ElevateTierFromTag(L"root", &ok) == ELEVATE_TIER_NONE && !ok, L"bad tag accepted");
-    CHECK(ElevateTierFromTag(NULL, &ok) == ELEVATE_TIER_NONE && !ok, L"null tag accepted");
-    CHECK(strcmp(ElevateUseName(ELEVATE_USE_SPAWN), "spawn") == 0, L"use spawn mismatch");
-    CHECK(strcmp(ElevateUseName(ELEVATE_USE_IMPERSONATE), "impersonate") == 0, L"use impersonate mismatch");
-    CHECK(strcmp(ElevateUseName(ELEVATE_USE_AUTO), "auto") == 0, L"use auto mismatch");
 
     memset(&status, 0, sizeof(status));
     ElevateQueryIdentity(&status);
@@ -114,47 +96,6 @@ static void TestElevateTiers(void) {
     CHECK(ElevateCurrentTier() == status.process.tier, L"current tier mismatch");
     CHECK(status.effective.sessionId != 0xFFFFFFFFu || status.process.sessionId == 0xFFFFFFFFu,
           L"session id mismatch");
-}
-
-static void TestElevateOff(void) {
-    wchar_t *argv[1];
-    ELEVATE_RESULT result;
-
-    argv[0] = L"fuckAce.exe";
-    ConfigInit();
-    g_config.elevateMode = ELEVATE_MODE_OFF;
-    memset(&result, 0, sizeof(result));
-    result.tier = ELEVATE_TIER_NONE;
-    CHECK(ElevateRun(1, argv, &result), L"ElevateRun(OFF) failed");
-    CHECK(!result.handoff, L"off mode should never hand off");
-    CHECK(g_elevate.mode == ELEVATE_MODE_OFF, L"off mode not recorded");
-    CHECK(g_elevate.process.valid, L"off mode identity invalid");
-    CHECK(result.tier == g_elevate.process.tier, L"off mode tier mismatch");
-    CHECK(!g_elevate.tiers[ELEVATE_TIER_TI].tried, L"off mode still probed TrustedInstaller");
-}
-
-static void TestElevateSingleTier(void) {
-    wchar_t *argv[1];
-    ELEVATE_RESULT result;
-    BOOL isAdmin;
-
-    argv[0] = L"fuckAce.exe";
-    ConfigInit();
-    g_config.elevateMode = ELEVATE_TIER_TI;
-    g_config.elevateFallback = FALSE;
-    memset(&result, 0, sizeof(result));
-    result.tier = ELEVATE_TIER_NONE;
-    CHECK(ElevateRun(1, argv, &result), L"ElevateRun(single tier) failed");
-    CHECK(g_elevate.tiers[ELEVATE_TIER_TI].tried, L"TI tier not attempted");
-    CHECK(!g_elevate.tiers[ELEVATE_TIER_SYSTEM].tried, L"fallback ran despite fallback off");
-    CHECK(!g_elevate.tiers[ELEVATE_TIER_ADMIN].tried, L"admin tier ran despite fallback off");
-    isAdmin = LimiterIsRunAsAdmin();
-    if (!isAdmin) {
-        CHECK(!g_elevate.tiers[ELEVATE_TIER_TI].ok, L"TI tier succeeded without administrator");
-        CHECK(!g_elevate.landed, L"landed without administrator");
-    }
-    ElevateRevert();
-    CHECK(!g_elevate.impersonating, L"revert did not clear impersonation");
 }
 
 /* 被父进程拉起的子进程必须直接开跑，不能再提权，否则会无限递归。 */
@@ -453,8 +394,6 @@ int wmain(int argc, wchar_t **argv) {
     TestConfig();
     TestElevateConfig();
     TestElevateTiers();
-    TestElevateOff();
-    TestElevateSingleTier();
     TestElevateChildMode();
     TestElevateDiagnose();
     TestTiHelpers();

@@ -645,11 +645,7 @@ void UIElevationPanel(const ELEVATE_STATUS *status, const ELEVATE_RESULT *result
     UIResetCursor();
 
     UIBoxRule("┌", "┐");
-    UIBoxLine(COLOR_TITLE, " fuckAce · privilege chain · as=%s · use=%s",
-              status->mode == ELEVATE_MODE_AUTO ? "auto"
-                                                 : status->mode == ELEVATE_MODE_OFF ? "off"
-                                                                                    : ElevateTierTag(status->mode),
-              ElevateUseName(status->use));
+    UIBoxLine(COLOR_TITLE, " fuckAce · privilege chain");
     UIBoxRule("├", "┤");
     for (tier = 0; tier < ELEVATE_TIER_COUNT; tier++) {
         UIElevationTierRow(&status->tiers[tier], tier);
@@ -749,12 +745,7 @@ void UIDiagnosePanel(const ELEVATE_STATUS *status) {
         UIBoxLine(COLOR_FAIL, "   token query failed (Error=%lu)", (unsigned long)status->effective.error);
     }
     UIBoxRule("├", "┤");
-    UIBoxLine(COLOR_HEAD, " tier attempts  (as=%s · use=%s · fallback=%s)",
-              status->mode == ELEVATE_MODE_AUTO ? "auto"
-                                                 : status->mode == ELEVATE_MODE_OFF ? "off"
-                                                                                    : ElevateTierTag(status->mode),
-              ElevateUseName(status->use),
-              status->fallback ? "on" : "off");
+    UIBoxLine(COLOR_HEAD, " tier attempts  (TrustedInstaller → SYSTEM → admin)");
     for (tier = 0; tier < ELEVATE_TIER_COUNT; tier++) {
         const ELEVATE_TIER_RESULT *info = &status->tiers[tier];
 

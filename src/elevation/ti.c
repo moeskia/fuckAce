@@ -1,5 +1,4 @@
 #include "elevation/elevate.h"
-#include "app/config.h"
 #include "system/titoken.h"
 #include "elevation/elevate_internal.h"
 
@@ -396,11 +395,6 @@ static BOOL ElevateAcquireTrustedInstallerTokenForged(ELEVATE_TIER_RESULT *resul
     HANDLE forged;
     DWORD error = ERROR_SUCCESS;
 
-    if (!g_config.tiForge) {
-        result->error = ERROR_NOT_SUPPORTED;
-        wcscpy(result->note, L"forge disabled");
-        return FALSE;
-    }
     /* Windows 11 客户端的 LocalSystem 令牌里根本没有 SeCreateTokenPrivilege
        （实测 28 个特权，没有它）。先问一句，比让 NtCreateToken 回一个看不懂的
        STATUS_PRIVILEGE_NOT_HELD 强，也让用户明白该换哪条路。 */
@@ -429,7 +423,7 @@ static BOOL ElevateAcquireTrustedInstallerTokenForged(ELEVATE_TIER_RESULT *resul
     return TRUE;
 }
 
-/* 办法三（默认开启，强制劫持）：临时把 TrustedInstaller 服务的 ImagePath 换成自己。
+/* 办法三：临时把 TrustedInstaller 服务的 ImagePath 换成自己。
    SCM 会用真实的 TI 服务身份（ServiceSidType=1 会补上 NT SERVICE\TrustedInstaller）
    把本程序拉起来，复制完令牌立刻把键还原。
 
@@ -438,8 +432,7 @@ static BOOL ElevateAcquireTrustedInstallerTokenForged(ELEVATE_TIER_RESULT *resul
    暴露窗口只有 StartService 到服务 RUNNING 之间的几百毫秒。 */
 static BOOL ElevateAcquireTrustedInstallerTokenViaHijack(
     ELEVATE_TIER_RESULT *result,
-    HANDLE *outToken,
-    int serviceWasRunning
+    HANDLE *outToken
 ) {
     wchar_t executable[MAX_PATH * 2];
     wchar_t binPath[MAX_PATH * 2 + 64];
@@ -457,20 +450,6 @@ static BOOL ElevateAcquireTrustedInstallerTokenViaHijack(
     BOOL donorStarted = FALSE;
     BOOL ok = FALSE;
     int attempt;
-
-    if (g_config.tiHijack == TI_HIJACK_OFF) {
-        result->error = ERROR_NOT_SUPPORTED;
-        wcscpy(result->note, L"hijack off");
-        return FALSE;
-    }
-    if (g_config.elevateKeepService) {
-        /* 保留服务与劫持语义冲突：劫持必须先把服务停掉，而且劫持完绝不能把
-           供体留在系统里（那就是一个 TI 身份的后门）。这里直接跳过劫持，
-           让链条往 SYSTEM 回退。 */
-        result->error = ERROR_INVALID_FLAGS;
-        wcscpy(result->note, L"hijack skipped (service kept)");
-        return FALSE;
-    }
     if (!ElevateSelfExecutablePath(executable, sizeof(executable) / sizeof(executable[0]))) {
         result->error = ERROR_INSUFFICIENT_BUFFER;
         wcscpy(result->note, L"own executable path too long");
@@ -508,14 +487,6 @@ static BOOL ElevateAcquireTrustedInstallerTokenViaHijack(
     if (info.dwCurrentState != SERVICE_STOPPED) {
         SC_HANDLE stopper;
         BOOL stopped = FALSE;
-
-        /* 这里看的必须是**我们动手之前**的状态。方法一为了拿令牌会自己把 TI 拉起来，
-           如果拿"现在的状态"当判据，会把刚启动的服务误判成"系统正在维护"。 */
-        if (g_config.tiHijack != TI_HIJACK_FORCE && serviceWasRunning != 0) {
-            result->error = ERROR_SERVICE_ALREADY_RUNNING;
-            wcscpy(result->note, L"TI was already running; hijack skipped");
-            goto done;
-        }
         stopper = OpenServiceW(
             manager,
             ELEVATE_TI_SERVICE_NAME,
@@ -644,36 +615,10 @@ done:
     return ok;
 }
 
-/* 只读查询：TI 服务当前在不在跑。安全闸门要的是"我们动手之前"的状态。 */
-static int TiServiceRunning(void) {
-    SC_HANDLE manager = OpenSCManagerW(NULL, NULL, SC_MANAGER_CONNECT);
-    SC_HANDLE service;
-    SERVICE_STATUS status;
-
-    if (!manager) {
-        return -1;
-    }
-    service = OpenServiceW(manager, ELEVATE_TI_SERVICE_NAME, SERVICE_QUERY_STATUS);
-    if (!service) {
-        CloseServiceHandle(manager);
-        return -1;
-    }
-    memset(&status, 0, sizeof(status));
-    if (!QueryServiceStatus(service, &status)) {
-        CloseServiceHandle(service);
-        CloseServiceHandle(manager);
-        return -1;
-    }
-    CloseServiceHandle(service);
-    CloseServiceHandle(manager);
-    return status.dwCurrentState == SERVICE_STOPPED ? 0 : 1;
-}
-
 /* 这两种办法都必须站在 SYSTEM 上。 */
 static BOOL ElevateAcquireTrustedInstallerTokenElevated(
     ELEVATE_TIER_RESULT *result,
-    HANDLE *outToken,
-    int serviceWasRunning
+    HANDLE *outToken
 ) {
     ELEVATE_TIER_RESULT forge;
     ELEVATE_TIER_RESULT hijack;
@@ -684,7 +629,7 @@ static BOOL ElevateAcquireTrustedInstallerTokenElevated(
         return TRUE;
     }
     memset(&hijack, 0, sizeof(hijack));
-    if (ElevateAcquireTrustedInstallerTokenViaHijack(&hijack, outToken, serviceWasRunning)) {
+    if (ElevateAcquireTrustedInstallerTokenViaHijack(&hijack, outToken)) {
         ElevateTierResultCopy(result, &hijack);
         return TRUE;
     }
@@ -711,8 +656,6 @@ BOOL ElevateAcquireTrustedInstallerToken(ELEVATE_TIER_RESULT *result, HANDLE *ou
     HANDLE impersonation = NULL;
     DWORD error = ERROR_SUCCESS;
     BOOL borrowed = FALSE;
-    /* 必须在任何方法动手之前取样：方法一会把 TI 服务拉起来。 */
-    int serviceWasRunning = TiServiceRunning();
     BOOL ok;
 
     memset(&direct, 0, sizeof(direct));
@@ -759,7 +702,7 @@ BOOL ElevateAcquireTrustedInstallerToken(ELEVATE_TIER_RESULT *result, HANDLE *ou
             }
             borrowed = TRUE;
         }
-        ok = ElevateAcquireTrustedInstallerTokenElevated(&elevated, outToken, serviceWasRunning);
+        ok = ElevateAcquireTrustedInstallerTokenElevated(&elevated, outToken);
         if (borrowed) {
             RevertToSelf();
             CloseHandle(impersonation);
