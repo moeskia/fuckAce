@@ -140,7 +140,7 @@ int EngineRunOnce(BOOL isFirst) {
         UIBoxRow(count, header);
     }
 
-    LimiterApplyBatch(targets, targetCount, affinity, DEFAULT_CPU_CAP, results);
+    LimiterApplyBatch(targets, targetCount, affinity, results);
     {
         int foundCount = 0;
         int skippedCount = 0;

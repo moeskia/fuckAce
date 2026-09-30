@@ -3,7 +3,6 @@
 
 #include "core/common.h"
 
-BOOL LimiterIsRunAsAdmin(void);
 BOOL LimiterEnableDebugPrivilege(DWORD *outError);
 DWORD LimiterGetCpuCount(DWORD group);
 DWORD_PTR LimiterGetLastCpuAffinityMask(DWORD cpuCount);
@@ -12,7 +11,6 @@ void LimiterApplyBatch(
     const TARGET *targets,
     int count,
     DWORD_PTR affinityMask,
-    DWORD cpuCapPercent,
     PROCESS_RESULT *results
 );
 

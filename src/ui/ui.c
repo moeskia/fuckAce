@@ -119,8 +119,6 @@ static const char *UIShortReason(DWORD error) {
         return "not applied";
     case ERROR_NOT_VERIFIABLE:
         return "set, not verifiable";
-    case ERROR_JOB_CONFLICT:
-        return "job conflict";
     }
     return "";
 }

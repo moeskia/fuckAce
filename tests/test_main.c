@@ -223,7 +223,7 @@ static void TestResultState(void) {
     CHECK(SummaryExitCode(1, 1, 0) == 0, L"exit code 0 mismatch");
     CHECK(SummaryExitCode(2, 1, 1) == 2, L"exit code 2 mismatch");
     CHECK(SummaryExitCode(1, 0, 0) == 3, L"exit code 3 mismatch");
-    LimiterApplyBatch(NULL, 0, 0, 0, NULL);
+    LimiterApplyBatch(NULL, 0, 0, NULL);
 }
 
 /* 受限令牌环境（AppContainer / 沙箱）里连自身进程都拿不到
@@ -297,7 +297,6 @@ static void TestChildBatch(void) {
         &target,
         1,
         LimiterGetLastCpuAffinityMask(LimiterGetCpuCount(0)),
-        3,
         &first);
     CHECK(first.opened, L"child process was not opened");
     CHECK(!first.stale, L"child process was marked stale");
@@ -307,7 +306,6 @@ static void TestChildBatch(void) {
         &target,
         1,
         LimiterGetLastCpuAffinityMask(LimiterGetCpuCount(0)),
-        3,
         &second);
     CHECK(RESULT_OK(&second, STEP_CAP), L"child CPU cap was not reapplied");
     ResumeThread(process.hThread);
@@ -351,7 +349,6 @@ static void TestExternalJob(void) {
         &target,
         1,
         LimiterGetLastCpuAffinityMask(LimiterGetCpuCount(0)),
-        3,
         &result);
     CHECK(result.opened && !result.stale, L"external-job child open mismatch");
     CHECK(!result.capSkipped, L"external job cap was skipped");
@@ -376,12 +373,12 @@ static void TestFailures(void) {
     memset(&target, 0, sizeof(target));
     target.pid = 0xFFFFFFF0u;
     wcscpy(target.name, L"missing.exe");
-    LimiterApplyBatch(&target, 1, 1, 3, &result);
+    LimiterApplyBatch(&target, 1, 1, &result);
     CHECK(!result.opened, L"missing process opened");
     CHECK(!result.stale, L"missing process marked stale");
     target.pid = GetCurrentProcessId();
     wcscpy(target.name, L"not-this-process.exe");
-    LimiterApplyBatch(&target, 1, 1, 0, &result);
+    LimiterApplyBatch(&target, 1, 1, &result);
     CHECK(result.stale, L"identity mismatch was not marked stale");
     LimiterEnableDebugPrivilege(&ignored);
 }

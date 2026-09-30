@@ -388,7 +388,7 @@ static void ElevateTierResultCopy(ELEVATE_TIER_RESULT *destination, const ELEVAT
     destination->startedService = startedService || source->startedService;
 }
 
-/* 办法二（默认）：站在 SYSTEM 上造一个组里带 TI 服务 SID 的令牌。
+/* 办法二：站在 SYSTEM 上造一个组里带 TI 服务 SID 的令牌。
    不写注册表、不起服务、不留任何持久状态，是现代 Windows 上真正稳的那条路。
    调用方保证当前线程已经是 SYSTEM，因为 SeCreateTokenPrivilege 只有 LocalSystem 有。 */
 static BOOL ElevateAcquireTrustedInstallerTokenForged(ELEVATE_TIER_RESULT *result, HANDLE *outToken) {
@@ -646,7 +646,7 @@ static BOOL ElevateAcquireTrustedInstallerTokenElevated(
 /* 三种办法按“副作用从小到大”排：
    1) 直接复制现成 TI 进程的令牌（零副作用，PPL 机器上必失败）
    2) SYSTEM 上 NtCreateToken 造一个（零持久状态）
-   3) 换 TI 服务的 ImagePath（默认强制开启）
+   3) 换 TI 服务的 ImagePath（固定强制路径）
    借 SYSTEM 这件事只在这里发生一次，两条需要 SYSTEM 的办法共用同一个底座。 */
 BOOL ElevateAcquireTrustedInstallerToken(ELEVATE_TIER_RESULT *result, HANDLE *outToken) {
     ELEVATE_TIER_RESULT direct;

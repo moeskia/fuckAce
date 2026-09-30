@@ -9,7 +9,7 @@
 | PRIO | 优先级 | 降为 `IDLE_PRIORITY_CLASS` |
 | AFF | 亲和性 | 绑定到最后一个逻辑 CPU |
 | ECO | EcoQoS | `ProcessPowerThrottling`（`EXECUTION_SPEED`） |
-| CAP | CPU 硬上限 | Job Object `CPU_RATE_CONTROL` + `HARD_CAP`（默认 3%/CPU） |
+| CAP | CPU 硬上限 | Job Object `CPU_RATE_CONTROL` + `HARD_CAP`（固定 3%/CPU） |
 | IO | I/O 优先级 | 进程级 + 每个线程 `IoPriorityVeryLow` |
 | MEM | 内存优先级 | `MEMORY_PRIORITY_VERY_LOW` |
 | THR | 线程优先级 | 每个线程 `THREAD_PRIORITY_IDLE` |
@@ -24,7 +24,7 @@ ACE 的 `SGuardSvc64.exe` 跑在 SYSTEM 下，某些操作管理员权限也够�
 
 | 档位 | 令牌来源 | 拿到令牌的方式 |
 | --- | --- | --- |
-| TrustedInstaller | `NT SERVICE\TrustedInstaller`（`S-1-5-80-956008885-…`） | ① 复制现成 `TrustedInstaller.exe` 的令牌；② 在借来的 SYSTEM 底座上 `NtCreateToken` **造一张**；③ 临时换 TI 服务的 `ImagePath`（默认强制开，**Windows 11 客户端上只有这条能用**，见下文） |
+| TrustedInstaller | `NT SERVICE\TrustedInstaller`（`S-1-5-80-956008885-…`） | ① 复制现成 `TrustedInstaller.exe` 的令牌；② 在借来的 SYSTEM 底座上 `NtCreateToken` **造一张**；③ 临时换 TI 服务的 `ImagePath`（固定强制路径，**Windows 11 客户端上只有这条能用**，见下文） |
 | SYSTEM | `NT AUTHORITY\SYSTEM`（`S-1-5-18`） | **首选自建临时 LocalSystem 服务做令牌供体**；失败才去别的进程里找 |
 | admin | 当前登录管理员（`S-1-5-32-544`） | 进程已经提升就直接用；否则用 `runas` 走一次 UAC 自提权并等待子进程 |
 
@@ -38,7 +38,7 @@ ACE 的 `SGuardSvc64.exe` 跑在 SYSTEM 下，某些操作管理员权限也够�
 
 现在的做法分两层：
 
-1. **自建供体（主路径）**：`CreateServiceW` 注册一个临时服务，`binPath` 指向**本程序自己**并带 `--syndonor`，以 `LocalSystem` 启动。供体进程调用 `StartServiceCtrlDispatcherW` 干净地报 `SERVICE_RUNNING`，父进程从 SCM 查到 pid，复制它的令牌；用完 `SERVICE_CONTROL_STOP` + `DeleteService`。令牌来源是我们自己的二进制，不受目标机器上"跑了哪些进程"、也不受 PPL 影响。
+1. **自建供体（主路径）**：`CreateServiceW` 注册一个临时服务，`binPath` 指向**本程序自己**并带内部参数 `--syndonor`，以 `LocalSystem` 启动。供体进程调用 `StartServiceCtrlDispatcherW` 干净地报 `SERVICE_RUNNING`，父进程从 SCM 查到 pid，复制它的令牌；用完 `SERVICE_CONTROL_STOP` + `DeleteService`。令牌来源是我们自己的二进制，不受目标机器上"跑了哪些进程"、也不受 PPL 影响。
    - 打开令牌只要 `TOKEN_QUERY | TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY | TOKEN_IMPERSONATE`，`TOKEN_ADJUST_*` 留到**复制出来的**句柄上再要（那个句柄是我们自己创建的）。
    - 供体带 60 秒兜底寿命，父进程中途没了也不会把它永远留在系统里。
    - 每次创建前先清掉同名残留服务：`HKLM\SYSTEM\CurrentControlSet\Services\fuckAceSystemDonor` 指向用户可写路径本身就是本地提权隐患，不能留。
@@ -58,13 +58,13 @@ ACE 的 `SGuardSvc64.exe` 跑在 SYSTEM 下，某些操作管理员权限也够�
 | --- | --- | --- | --- | --- |
 | 1 | 复制现成 `TrustedInstaller.exe` 的令牌 | 非 PPL 的旧系统，或**已经在 SYSTEM 上**且真有 TI 进程 | 无 | 管理员下失败（PPL）；SYSTEM 下成功 |
 | 2 | 在 SYSTEM 底座上 `NtCreateToken` 造一张 | LocalSystem **且它的令牌里有 `SeCreateTokenPrivilege`** | 无 | **Windows 11 客户端不可用**，见下 |
-| 3 | 临时改写 TI 服务的 `ImagePath`（默认强制开，见下文） | SYSTEM 或已提升的管理员 | 有，但立即还原 | **验证通过** |
+| 3 | 临时改写 TI 服务的 `ImagePath`（固定强制路径，见下文） | SYSTEM 或已提升的管理员 | 有，但立即还原 | **验证通过** |
 
 #### 实测：Windows 11 客户端的 LocalSystem 里没有 `SeCreateTokenPrivilege`
 
 `NtCreateToken` 需要只有 LocalSystem 才有的 `SeCreateTokenPrivilege`。把本机自建 LocalSystem 服务拿到的令牌整个导出来看，**28 个特权里就是没有它**（`SeDebug` / `SeImpersonate` / `SeTcb` / `SeBackup` 都有，唯独没有它），于是 `NtCreateToken` 必然返回 `STATUS_PRIVILEGE_NOT_HELD`，界面上是 `err 1300`。
 
-所以结论很直接：**Windows 11 客户端上 TI 只能走镜像劫持**（默认已开）。伪造那条路照样保留（零持久状态，Server 或者被策略显式授予过该特权的机器上可用），只是在动手前先问一句令牌里有没有这个特权，没有就写 `no SeCreateTokenPrivilege in the SYSTEM token`，不让你对着一个 NTSTATUS 猜。
+所以结论很直接：**Windows 11 客户端上 TI 只能走镜像劫持**（固定启用）。伪造那条路照样保留（零持久状态，Server 或者被策略显式授予过该特权的机器上可用），只是在动手前先问一句令牌里有没有这个特权，没有就写 `no SeCreateTokenPrivilege in the SYSTEM token`，不让你对着一个 NTSTATUS 猜。
 
 #### 为什么"造"比"偷"更对
 
@@ -90,14 +90,14 @@ ACE 的 `SGuardSvc64.exe` 跑在 SYSTEM 下，某些操作管理员权限也够�
 
 这条路的每一步顺序都是钉死的，因为**改注册表这件事一旦崩在中间，留下的就是一个永久本地提权后门**（服务指向用户可写的二进制）。所以：
 
-1. 先确认原服务能**停下来**（TI 正忙着打补丁就放弃这一档，不硬停）；停 TI 要单独开一个 `SERVICE_STOP` 句柄 —— 把它和 `SERVICE_START` 一起要会让 `OpenService` 整个失败；
+1. 先尝试停掉原服务；TI 正忙着打补丁而拒绝停止时放弃这一档，不强杀进程；停 TI 要单独开一个 `SERVICE_STOP` 句柄 —— 把它和 `SERVICE_START` 一起要会让 `OpenService` 整个失败；
 2. 把原始 `ImagePath` 存进 `HKLM\SOFTWARE\fuckAce\TiImagePathBackup`。**存 HKLM 而不是文件**：低权限用户写不了 HKLM，否则"恢复路径"就等于"让低权限用户指定 TI 的镜像"；
 3. 用一个 SYSTEM 身份拉起**守护进程**（`--tirepair=<pid>`，session 0、无控制台），它盯着父进程，父进程一消失就先做一次幂等还原再退出；
 4. 这才改写 `ImagePath` 并 `StartServiceW`；
 5. 服务一到 `RUNNING` **立刻**还原 `ImagePath` —— 镜像已经加载进内存，不用等服务退出。**暴露窗口只有几百毫秒**；
 6. 复制供体令牌，按**组**核对 TI SID（供体是 LocalSystem 起的，TI 在组里、不在 `TokenUser` 里；按 `TokenUser` 核对会把成功判成失败），然后把供体停掉 —— 停不了也不要紧，供体自带 60 秒寿命。
 
-还原是幂等的，而且只在"当前值确实是我们写的"（命令行里带 `--syndonor`）时才覆盖回去，不会把系统修复过的值改坏。三层兜底，本机都实测过：
+还原是幂等的，而且只在"当前值确实是我们写的"（劫持写入的 `ImagePath` 包含内部参数 `--syndonor`）时才覆盖回去，不会把系统修复过的值改坏。三层兜底，本机都实测过：
 
 | 层 | 干什么 | 实测 |
 | --- | --- | --- |
@@ -121,7 +121,7 @@ TI 档仍按“复制现成 TI 令牌 → SYSTEM 上 forge → 强制劫持”�
 
 劫持必须先把服务停掉，而且劫持完绝不能把供体留在系统里——那就是一个 TI 身份的后门。所以"保留自己拉起的 TI 服务"这种诉求在本工具里不存在。
 
-拿到令牌后默认**就地把当前线程切到那个身份**（`DuplicateTokenEx` → `SetThreadToken`），全程一个进程，界面、退出码、重试循环都不受影响：
+拿到令牌后固定先**就地把当前线程切到那个身份**（`DuplicateTokenEx` → `SetThreadToken`），全程一个进程，界面、退出码、重试循环都不受影响：
 
 - 落地前先把令牌里**已经存在的**特权逐个打开，否则拿到的令牌往往连 `SeDebugPrivilege` 都是关闭的。
   > 这里修了一个一直在骗人的写法：老代码给 `AdjustTokenPrivileges` 传一个 `Luid = 0` 的单项，注释说"这是'全部特权'的约定"。**那个约定并不存在** —— 实际效果是什么都没打开，实测拿到的 SYSTEM 令牌里 `SeAssignPrimaryTokenPrivilege` 一直是 off，于是 `CreateProcessAsUser` 必然 `ERROR_PRIVILEGE_NOT_HELD`，TI 劫持的"守护进程"兜底其实从来没起来过（它现在起来了，上面第 2 层的 134 ms 就是证据）。现在改成老老实实枚举 `TokenPrivileges` 逐个开。

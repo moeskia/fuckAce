@@ -303,7 +303,7 @@ int ElevateDonorMain(void) {
     table[1].lpServiceName = NULL;
     table[1].lpServiceProc = NULL;
     if (!StartServiceCtrlDispatcherW(table)) {
-        /* 不是被 SCM 拉起来的（用户手敲了 --syndonor），直接退。 */
+        /* 不是被 SCM 拉起来的，直接退。 */
         return 1;
     }
     return 0;

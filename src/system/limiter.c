@@ -6,22 +6,6 @@ static DWORD NtError(NTSTATUS status) {
     return (DWORD)RtlNtStatusToDosError(status);
 }
 
-/* 生产路径用 ElevateHasRights()（生效档位）判定；本函数只按“进程令牌里的
-   Administrators 组是否启用”判定，仅供测试与诊断参考。 */
-BOOL LimiterIsRunAsAdmin(void) {
-    /* 必须查进程令牌而不是当前线程：提权成功后线程可能正模拟
-       TrustedInstaller/SYSTEM，那些令牌里的 Administrators 是 deny-only。 */
-    HANDLE token = NULL;
-    BOOL isAdmin = FALSE;
-
-    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
-        return FALSE;
-    }
-    isAdmin = ElevateTokenHasAdminGroup(token);
-    CloseHandle(token);
-    return isAdmin;
-}
-
 static BOOL EnablePrivilege(LPCWSTR name, DWORD *outError) {
     return ElevateEnablePrivilege(name, outError);
 }
@@ -474,7 +458,6 @@ void LimiterApplyBatch(
     const TARGET *targets,
     int count,
     DWORD_PTR affinityMask,
-    DWORD cpuCapPercent,
     PROCESS_RESULT *results
 ) {
     HANDLE processes[MAX_TARGETS];
@@ -544,14 +527,12 @@ void LimiterApplyBatch(
         results[i].attempted[STEP_ECO] = TRUE;
         SetEfficiencyMode(processes[i], &results[i].err[STEP_ECO]);
 
-        if (cpuCapPercent > 0) {
-            if ((rights[i] & (PROCESS_SET_QUOTA | PROCESS_TERMINATE)) !=
-                (PROCESS_SET_QUOTA | PROCESS_TERMINATE)) {
-                results[i].capSkipped = TRUE;
-            } else {
-                results[i].attempted[STEP_CAP] = TRUE;
-                ApplyCpuCap(processes[i], cpuCapPercent, &results[i].err[STEP_CAP]);
-            }
+        if ((rights[i] & (PROCESS_SET_QUOTA | PROCESS_TERMINATE)) !=
+            (PROCESS_SET_QUOTA | PROCESS_TERMINATE)) {
+            results[i].capSkipped = TRUE;
+        } else {
+            results[i].attempted[STEP_CAP] = TRUE;
+            ApplyCpuCap(processes[i], DEFAULT_CPU_CAP, &results[i].err[STEP_CAP]);
         }
 
         results[i].attempted[STEP_IO] = TRUE;
